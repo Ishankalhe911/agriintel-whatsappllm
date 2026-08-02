@@ -1,0 +1,23 @@
+# Web Framework & Server
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Database & Infrastructure
+redis
+psycopg2-binary
+python-dotenv
+
+# Algorand & x402
+py-algorand-sdk
+x402
+httpx
+
+# Google AI
+google-genai
+
+# Razorpay
+razorpay
+
+# HTTP
+requests
