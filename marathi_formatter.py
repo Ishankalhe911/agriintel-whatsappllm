@@ -19,7 +19,7 @@ from google.genai import types
 logger = logging.getLogger("agriintellect.formatter")
 
 # Initialize Gemini Client
-GEMINI_API_KEY5= os.getenv("GEMINI_API_KEY_5", "AQ.Ab8RN6KT6AnKycC7FMojrGHIoat42F2O7OPmORRXLopifZJ4pg")
+GEMINI_API_KEY5= os.getenv("GEMINI_API_KEY_5",)
 client = genai.Client(api_key=GEMINI_API_KEY5) if GEMINI_API_KEY5 else None
 
 # System prompt enforcing formatting rules & agronomy tone
