@@ -334,11 +334,21 @@ async def _handle_text_message(
     clean_phone = normalize_phone(phone)
 
     # ── If payment is pending, don't re-orchestrate ────────────────────────
-    if session and session.get("payment_status") == "pending":
-        # Check if they have a payment link id — if so, remind them
-        if session.get("payment_link_id"):
-            await send_text(phone, _AWAITING_PAYMENT_MSG.get(lang, _AWAITING_PAYMENT_MSG["mr"]))
-            return
+    # ── Handle existing session states ─────────────────────────────────────
+    if session:
+        current_status = session.get("payment_status")
+        
+        if current_status == "pending":
+            # Check if they have a payment link id — if so, remind them
+            if session.get("payment_link_id"):
+                await send_text(phone, _AWAITING_PAYMENT_MSG.get(lang, _AWAITING_PAYMENT_MSG["mr"]))
+                return
+                
+        elif current_status == "paid":
+            # PREVENT STATE LEAK: Old session is finished. 
+            # Clear it from Redis and set local variable to None so a fresh one is created below.
+            store.clear_session(session.get("session_id"))
+            session = None
 
     # ── Create a skeleton session if none exists ───────────────────────────
     # create_session requires crop, qty, intent, service_type but we don't
