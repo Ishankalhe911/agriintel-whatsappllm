@@ -3,29 +3,40 @@ orchestrator.py
 ───────────────
 Three-stage pipeline for farmer message understanding.
 
-Stage 1 — PREFLIGHT (gemini-2.0-flash, cheapest)
-Stage 2 — EXTRACTION (gemini-2.5-flash, accurate)  
-Stage 3 — ROUTING (gemini-2.5-flash, function calling)
+Stage 1 — PREFLIGHT (gemini-3.1-flash-lite)
+    Gate: is it agri? is it a service we handle? or coming soon?
+Stage 2 — EXTRACTION (gemini-3.1-flash-lite)
+    Extract: crop, qty, pest, symptom, location hints, language
+Stage 3 — ROUTING (gemini-3.1-flash-lite, function calling)
+    Route: which endpoint — mandi / weather / fertilizer
 
 Fixes applied:
-  ✅ Fix 1: Coming soon endpoints (fertilizer, top3_crops)
-  ✅ Fix 2: response_mime_type="application/json" for stages 1+2
-  ✅ Fix 3: client.aio.models.generate_content (native async, no threads)
-  ⚠️  Fix 3 NOT applied to stage 3 — function calling incompatible with mime type
+  ✅ Fix 1: fertilizer removed from coming_soon — it is LIVE
+  ✅ Fix 2: FERTILIZER_TOOL added to Stage 3 TOOLS
+  ✅ Fix 3: Preflight prompt updated — fertilizer is handled service
+  ✅ Fix 4: Extraction schema adds pest/symptom/category_intent fields
+  ✅ Fix 5: Session save includes pest/symptom/category_intent
+  ✅ Fix 6: Routing else→ explicit if/elif — no silent wrong routing
+  ✅ Fix 7: Fertilizer ack message — no location request (correct)
+  ✅ Fix 8: All user-facing strings updated to mention 3 services
+  ✅ Fix 9: gemini-3.1-flash-lite across all 3 stages
+  ✅ Fix 10: response_mime_type stages 1+2, omitted stage 3 (function calling)
+  ✅ Fix 11: client.aio.models.generate_content (native async, no threads)
+  ✅ Fix 12: Random key rotation across all 5 Gemini keys
 """
 
-import asyncio
 import json
 import logging
 import os
+import random
 from typing import Optional
+
 from google import genai
 from google.genai import types
-import random
 
 logger = logging.getLogger(__name__)
 
-# ─── API Keys (3 keys, rotated to avoid rate limits) ─────────────────────────
+# ─── API Keys — rotated randomly to avoid RPM limits ─────────────────────────
 
 GEMINI_KEYS = [
     os.getenv("GEMINI_API_KEY_1"),
@@ -35,16 +46,15 @@ GEMINI_KEYS = [
     os.getenv("GEMINI_API_KEY_5"),
 ]
 
-# Replace entire _get_client function with this:
+
 def _get_client() -> genai.Client:
     """
-    Returns a Gemini client using a randomly selected API key.
-    Random selection on every call = true load balancing across all keys.
-    Prevents any single key from hitting RPM limits under concurrent load.
+    Random key selection on every call = true load balancing.
+    Prevents any single key hitting RPM limits under concurrent load.
     """
     keys = [k for k in GEMINI_KEYS if k]
     if not keys:
-        raise ValueError("No GEMINI_API_KEY set. Need at least GEMINI_API_KEY_1.")
+        raise ValueError("No GEMINI_API_KEY_* set. Need at least GEMINI_API_KEY_1.")
     return genai.Client(api_key=random.choice(keys))
 
 
@@ -53,7 +63,6 @@ def _get_client() -> genai.Client:
 MODEL_PREFLIGHT  = "gemini-3.1-flash-lite"
 MODEL_EXTRACTION = "gemini-3.1-flash-lite"
 MODEL_ROUTING    = "gemini-3.1-flash-lite"
-
 
 # ─── Supported Crops ──────────────────────────────────────────────────────────
 
@@ -74,7 +83,8 @@ Fruits: pomegranate/डाळिंब, orange/संत्रा, sweet lime/�
         sapota/चिकू, apple/सफरचंद, lemon/लिंबू, jackfruit/फणस
 """
 
-# ─── Redirects & Coming Soon ──────────────────────────────────────────────────
+# ─── Redirects ────────────────────────────────────────────────────────────────
+# Fix 8: updated to mention 3 services in general redirect
 
 THINGS_WE_DONT_HANDLE = {
     "loan":      "कर्जासाठी PM Kisan helpline: 155261 वर कॉल करा",
@@ -82,38 +92,46 @@ THINGS_WE_DONT_HANDLE = {
     "insurance": "पीक विम्यासाठी PMFBY helpline: 1800-180-1551",
     "scheme":    "सरकारी योजनांसाठी: agri.maharashtra.gov.in",
     "pest_id":   "किडीची ओळख करण्यासाठी: KVK helpline 1800-180-1551",
-    "general":   "माफ करा, हे आम्ही सध्या हाताळत नाही. आम्ही मंडी भाव आणि हवामान माहिती देतो."
+    "general":   "माफ करा, हे आम्ही सध्या हाताळत नाही. आम्ही मंडी भाव, हवामान आणि पीक संरक्षण माहिती देतो.",
 }
 
+# Fix 1: fertilizer REMOVED — it is a live service now
+# Only top_crops remains as coming soon
 COMING_SOON_MESSAGES = {
-    "fertilizer": {
-        "mr": "🌱 खत व्यवस्थापन सेवा लवकरच सुरू होत आहे!\nसध्या आम्ही फक्त *मंडी भाव* आणि *हवामान* माहिती देतो.",
-        "hi": "🌱 उर्वरक सिफारिश सेवा जल्द शुरू हो रही है!\nअभी हम सिर्फ *मंडी भाव* और *मौसम* जानकारी देते हैं।",
-        "en": "🌱 Fertilizer Recommendation service is coming soon!\nCurrently we provide *mandi prices* and *weather* only.",
-    },
     "top_crops": {
-        "mr": "📊 'कोणते पीक घ्यावे' ही सेवा लवकरच सुरू होत आहे!\nसध्या आम्ही *मंडी भाव* आणि *हवामान* माहिती देतो.",
-        "hi": "📊 'कौन सी फसल उगाएं' सेवा जल्द शुरू हो रही है!\nअभी हम *मंडी भाव* और *मौसम* जानकारी देते हैं।",
-        "en": "📊 'Top 3 Crops to Grow' service is coming soon!\nCurrently we provide *mandi prices* and *weather* only.",
+        "mr": "📊 'कोणते पीक घ्यावे' ही सेवा लवकरच सुरू होत आहे!\nसध्या आम्ही *मंडी भाव*, *हवामान* आणि *पीक संरक्षण* माहिती देतो.",
+        "hi": "📊 'कौन सी फसल उगाएं' सेवा जल्द शुरू हो रही है!\nअभी हम *मंडी भाव*, *मौसम* और *फसल सुरक्षा* जानकारी देते हैं।",
+        "en": "📊 'Top 3 Crops to Grow' service is coming soon!\nCurrently we provide *mandi prices*, *weather* and *crop protection* advice.",
     }
 }
 
+# Auto-updates since it's derived from the dict above
 COMING_SOON_KEYS = set(COMING_SOON_MESSAGES.keys())
 
 
 # ─── Stage 1: Preflight ───────────────────────────────────────────────────────
 
 async def _preflight(message: str) -> dict:
+    """
+    Cheapest gate. Answers three questions:
+      1. Is this agri-related at all?
+      2. Do we handle this service?
+      3. If not handled, which redirect key?
+    Returns early with helpful redirect to avoid paying for extraction+routing.
+    """
     client = _get_client()
 
+    # Fix 3: fertilizer is now a HANDLED service in the prompt
+    # Fix 5: preflight prompt examples updated
     prompt = f"""You are a preflight filter for an Indian agriculture WhatsApp bot.
 
-The bot handles ONLY:
-1. Mandi prices — where to sell crop, APMC rates, market prices, logistics, transport
-2. Weather risk — rain forecast, spray safety, irrigation, crop stress, pest risk windows
+The bot handles THREE services:
+1. Mandi prices — where to sell crop, APMC rates, market prices, profit, transport, logistics
+2. Weather risk — rain forecast, spray safety, irrigation, crop stress, pest risk windows, drone safety
+3. Crop protection — pest identification, disease diagnosis, chemical/pesticide recommendations,
+   fertilizer advice, dosage, waiting periods, brand names (खत, कीटकनाशक, बुरशीनाशक, तणनाशक)
 
 Coming soon (not yet available):
-- Fertilizer recommendation / खत व्यवस्थापन → redirect_key: "fertilizer"
 - Top 3 crops to grow / कोणते पीक घ्यावे → redirect_key: "top_crops"
 
 Does NOT handle at all:
@@ -121,7 +139,6 @@ Does NOT handle at all:
 - Seeds / beej / biyane → redirect_key: "seeds"
 - Insurance / vima → redirect_key: "insurance"
 - Government schemes / yojana → redirect_key: "scheme"
-- Pest identification (we give risk windows but not diagnosis) → redirect_key: "pest_id"
 - Anything non-agricultural → redirect_key: "general"
 
 Farmer message: "{message}"
@@ -130,20 +147,21 @@ Return JSON only:
 {{
   "is_agri": true/false,
   "is_handled": true/false,
-  "redirect_key": null or "loan"/"seeds"/"insurance"/"scheme"/"pest_id"/"general"/"fertilizer"/"top_crops",
+  "redirect_key": null or "loan"/"seeds"/"insurance"/"scheme"/"general"/"top_crops",
   "reason": "one short English sentence"
 }}
 
 Examples:
 "soybean bhav kiti" → {{"is_agri":true,"is_handled":true,"redirect_key":null,"reason":"mandi price query"}}
 "karz hava" → {{"is_agri":true,"is_handled":false,"redirect_key":"loan","reason":"loan request"}}
-"khad kuthun milel" → {{"is_agri":true,"is_handled":false,"redirect_key":"fertilizer","reason":"fertilizer coming soon"}}
 "konthe pik ghyave" → {{"is_agri":true,"is_handled":false,"redirect_key":"top_crops","reason":"crop selection coming soon"}}
 "paus yeil ka" → {{"is_agri":true,"is_handled":true,"redirect_key":null,"reason":"weather query"}}
+"soybean la stem borer zala" → {{"is_agri":true,"is_handled":true,"redirect_key":null,"reason":"pest advisory query"}}
+"khad kuthle vapravu" → {{"is_agri":true,"is_handled":true,"redirect_key":null,"reason":"crop protection query"}}
+"cotton la rog aahe, chemical sanga" → {{"is_agri":true,"is_handled":true,"redirect_key":null,"reason":"disease/chemical query"}}
 "cricket score" → {{"is_agri":false,"is_handled":false,"redirect_key":"general","reason":"not agriculture"}}"""
 
     try:
-        # Fix 3: native async. Fix 2: response_mime_type for clean JSON
         response = await client.aio.models.generate_content(
             model=MODEL_PREFLIGHT,
             contents=prompt,
@@ -151,20 +169,25 @@ Examples:
                 max_output_tokens=150,
                 temperature=0.0,
                 response_mime_type="application/json",
-            )
+            ),
         )
         return json.loads(response.text)
     except Exception as e:
         logger.error(f"[Orchestrator] Preflight failed: {e}")
+        # Fail open — assume handled so farmer gets a response
         return {
             "is_agri": True, "is_handled": True,
-            "redirect_key": None, "reason": "preflight_error_assume_handled"
+            "redirect_key": None, "reason": "preflight_error_assume_handled",
         }
 
 
 # ─── Stage 2: Extraction ──────────────────────────────────────────────────────
 
 async def _extract_intent(message: str) -> dict:
+    """
+    Extracts ALL structured fields from the farmer message.
+    Fix 4: Added pest, symptom, category_intent for fertilizer endpoint.
+    """
     client = _get_client()
 
     prompt = f"""You are an expert agricultural assistant fluent in Marathi, Hindi, and English.
@@ -177,13 +200,19 @@ Supported crops (normalize to English name):
 {SUPPORTED_CROPS}
 
 Rules:
-1. crop: English lowercase only. सोयाबीन/soya/soyabean → soybean. कापूस/kapus → cotton. कांदा → onion
-2. qty: number only as string. "100 quintal" → qty="100", qty_unit="quintal"
-3. variety: Keep in ORIGINAL SCRIPT. शरबती → variety="शरबती". lokwan → variety="lokwan"
+1. crop: English lowercase only. सोयाबीन/soya/soyabean→soybean. कापूस/kapus→cotton. कांदा→onion
+2. qty: number only as string. "100 quintal"→qty="100", qty_unit="quintal"
+3. variety: Keep in ORIGINAL SCRIPT. शरबती→variety="शरबती". lokwan→variety="lokwan"
 4. time_horizon: "now" unless farmer says pudhe/future/N days → "30_days" format
 5. language: "mr" for Marathi/Marathi-in-English-script, "hi" for Hindi, "en" for English
 6. needs_clarification: true ONLY if crop completely missing AND cannot be inferred
 7. Weather queries can have null crop — weather works without crop
+8. pest: extract pest/disease names as a list. मावा→["aphid"], stem borer→["stem_borer"],
+         करपा→["blight"], भुरी→["powdery_mildew"]. Multiple pests → list all.
+9. symptom: if exact pest unknown but farmer describes visible symptoms, capture verbatim.
+            "पाने पिवळी पडत आहेत" → symptom="leaves turning yellow"
+10. category_intent: if farmer asks for a specific chemical category.
+            "बुरशीनाशक सांगा"→"fungicide", "तणनाशक"→"herbicide", "खत"→"fertilizer"
 
 Return JSON only:
 {{
@@ -196,6 +225,9 @@ Return JSON only:
   "harvest_date": null,
   "sowing_date": null,
   "forecast_days": 7,
+  "pest": null,
+  "symptom": null,
+  "category_intent": null,
   "language": "mr",
   "raw_intent": "one line summary in English",
   "needs_clarification": false,
@@ -209,18 +241,21 @@ Examples:
 "aaj spray karu ka" → crop=null, raw_intent="spray safety check today"
 "mera gehun 50 bag bechna hai" → crop="wheat", qty="50", qty_unit="bag", language="hi"
 "lokwan variety sathi bhav" → crop="wheat", variety="lokwan"
+"soybean la stem borer zala, kay maru?" → crop="soybean", pest=["stem_borer"], raw_intent="stem borer pest control"
+"cotton la pane pivali padtat" → crop="cotton", symptom="leaves turning yellow", pest=null
+"tomato la blight ani bhuri dono aahet" → crop="tomato", pest=["blight","powdery_mildew"]
+"burshinashak sanga soybean sathi" → crop="soybean", category_intent="fungicide"
 "hi" → needs_clarification=true, clarification_aspect="service" """
 
     try:
-        # Fix 3: native async. Fix 2: response_mime_type
         response = await client.aio.models.generate_content(
             model=MODEL_EXTRACTION,
             contents=prompt,
             config=types.GenerateContentConfig(
-                max_output_tokens=300,
+                max_output_tokens=400,
                 temperature=0.0,
                 response_mime_type="application/json",
-            )
+            ),
         )
         return json.loads(response.text)
     except Exception as e:
@@ -229,25 +264,26 @@ Examples:
             "crop": None, "qty": None, "qty_unit": None,
             "variety": None, "radius_km": None, "time_horizon": "now",
             "harvest_date": None, "sowing_date": None, "forecast_days": 7,
+            "pest": None, "symptom": None, "category_intent": None,
             "language": "mr", "raw_intent": "unknown",
-            "needs_clarification": True, "clarification_aspect": "service"
+            "needs_clarification": True, "clarification_aspect": "service",
         }
 
 
 # ─── Stage 3: Routing (Function Calling) ─────────────────────────────────────
-# NOTE: response_mime_type NOT used here — incompatible with function calling
-# Fix 3 (native async) still applied via client.aio
+# response_mime_type NOT used — incompatible with function calling
+# Native async (client.aio) still applied
 
 MANDI_TOOL = types.FunctionDeclaration(
     name="get_mandi_prices",
     description="""
 Use when farmer wants ANY of:
 SELLING / PRICE:
-- Current APMC mandi modal price (from Maharashtra govt MSAMB database, 450+ records daily)
+- Current APMC mandi modal price (Maharashtra govt MSAMB database, 450+ records daily)
 - Which mandi to sell at for maximum profit
 - Price comparison between multiple mandis
 - Net profit after APMC deductions (cess 1.05% + commission 3-8% + hamali)
-- Transport cost, vehicle recommendation (Tata Ace/Bolero/14ft truck/10-wheeler by qty)
+- Transport cost, vehicle recommendation (Tata Ace/Bolero/14ft/10-wheeler by qty)
 - Future price estimate using seasonal heuristics (N_days format)
 - Nearest active mandis discovery (even without specifying crop)
 
@@ -277,8 +313,8 @@ EXAMPLES:
             "radius_km": types.Schema(type=types.Type.INTEGER,
                 description="Search radius in km, default 100"),
         },
-        required=["crop"]
-    )
+        required=["crop"],
+    ),
 )
 
 WEATHER_TOOL = types.FunctionDeclaration(
@@ -286,42 +322,43 @@ WEATHER_TOOL = types.FunctionDeclaration(
     description="""
 Use when farmer wants ANY of:
 WEATHER / RAIN:
-- Will it rain? Rain forecast next N days (Open-Meteo ECMWF/NOAA precision)
+- Will it rain? Rain forecast next N days
 - Drought risk, water stress, season-to-date rainfall vs normal
 
 FARMING OPERATIONS:
-- Spray safety today? (Delta-T calculation: 2-8°C optimal, wind < 15kmh, rain < 2mm)
+- Spray safety today? (Delta-T: 2-8°C optimal, wind <15kmh, rain <2mm)
 - Drone spray window safety check
 - Irrigation advice based on net water balance (rain - ET0)
 - Wind risk days for spray drift
 
 CROP HEALTH:
-- Crop stress risk level (LOW/MEDIUM/HIGH) with specific factors
-- Pest and disease risk windows (RH > 85% + temp 25-32°C = fungal risk)
-- Heat stress days (above crop threshold temperature)
-- Heavy rain days that could lodge or damage crop
+- Crop stress risk level (LOW/MEDIUM/HIGH)
+- Pest and disease risk WINDOWS (RH>85% + temp 25-32°C = fungal risk)
+- Heat stress days, heavy rain days, GDD accumulated
 - Growth stage based on sowing date
-- GDD (Growing Degree Days) accumulated in forecast window
 
 SEASONAL (requires harvest_date):
-- ECMWF sub-seasonal weeks 3-4 outlook (days 17-35)
+- ECMWF sub-seasonal weeks 3-4 outlook
 - NASA POWER 30yr climatology adjusted by ENSO/IOD phase
-- Monthly rainfall outlook to harvest date
 
 CRITICAL RULE — SPRAY IS ALWAYS WEATHER:
 फवारणी/spray/drone spray → ALWAYS WEATHER even if crop mentioned
 
-MARATHI: पाऊस, हवामान, फवारणी, सिंचन, दुष्काळ, कीड, रोग, वारा, उष्णता
-HINDI: बारिश, मौसम, सिंचाई, कीट, रोग, सूखा, हवा
-ENGLISH: rain, weather, spray, irrigation, pest, disease, drought, wind, harvest
+DISAMBIGUATION — WEATHER vs CROP PROTECTION:
+- "rog aahe, chemical sanga" → CROP PROTECTION (specific chemical needed)
+- "rog yeण्याची शक्यता आहे ka" → WEATHER (disease risk window)
+- "stem borer zala, kay maru" → CROP PROTECTION (treatment needed)
+- "keed yeण्याचा धोका ahe ka" → WEATHER (pest risk window)
+
+MARATHI: पाऊस, हवामान, फवारणी, सिंचन, दुष्काळ, वारा, उष्णता, धोका
+HINDI: बारिश, मौसम, सिंचाई, सूखा, हवा
+ENGLISH: rain, weather, spray, irrigation, drought, wind, forecast
 
 EXAMPLES:
-"आज फवारणी करू का सोयाबीनवर?" → WEATHER (spray = weather always)
+"आज फवारणी करू का?" → WEATHER (spray = weather always)
 "paus yeil ka pudhe 7 diwas?" → WEATHER
-"majhya cotton la rog aahe" → WEATHER (disease risk)
 "drone udvu ka aaj?" → WEATHER (drone = spray safety)
 "soybean la heat stress ahe ka?" → WEATHER
-"irrigation karu ka?" → WEATHER
 "September madhe paus kaasa rahil?" → WEATHER (subseasonal)
 """,
     parameters=types.Schema(
@@ -336,11 +373,81 @@ EXAMPLES:
             "harvest_date": types.Schema(type=types.Type.STRING,
                 description="Harvest date YYYY-MM-DD — triggers subseasonal + seasonal horizons"),
         },
-        required=[]
-    )
+        required=[],
+    ),
 )
 
-TOOLS = [types.Tool(function_declarations=[MANDI_TOOL, WEATHER_TOOL])]
+# Fix 2: FERTILIZER_TOOL added
+FERTILIZER_TOOL = types.FunctionDeclaration(
+    name="get_crop_protection",
+    description="""
+Use when farmer wants ANY of:
+PEST / DISEASE TREATMENT:
+- Specific pest identified and needs chemical recommendation
+- Disease on crop and needs fungicide/treatment
+- Wants to know what to spray for a specific problem
+- Wants dosage, waiting period, brand names for a chemical
+
+CHEMICAL / FERTILIZER ADVICE:
+- Which insecticide/fungicide/herbicide to use
+- Brand names available in Maharashtra market
+- Safe dosage per pump or per acre
+- Waiting period before harvest (काढणीपूर्वीचा कालावधी)
+- Bio-pesticide options
+- CIBRC-approved chemicals for a crop-pest combination
+
+SYMPTOM-BASED DIAGNOSIS:
+- Farmer describes visible symptoms (yellow leaves, wilting, holes in leaves)
+  and needs to know what pest/disease it is AND what to do
+
+CRITICAL RULES:
+- NO location/lat/lon needed — never ask for or use location
+- crop is REQUIRED — always extract crop before routing here
+- Use for TREATMENT queries, not risk window queries
+  (risk windows = WEATHER tool)
+
+DISAMBIGUATION — CROP PROTECTION vs WEATHER:
+- "stem borer zala, kay maru" → CROP PROTECTION ✅ (treatment)
+- "keed yeण्याचा धोका ahe ka" → WEATHER (risk window, not treatment)
+- "chemical sanga" → CROP PROTECTION ✅
+- "rog aahe" → CROP PROTECTION ✅ (disease present, needs treatment)
+- "rog येण्याची शक्यता" → WEATHER (disease risk forecast)
+
+MARATHI: कीड, रोग, बुरशी, मावा, खोडकिडा, करपा, भुरी, तुडतुडे, फुलकिडे,
+         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment)
+HINDI: कीट, रोग, फफूंद, माहू, कीटनाशक, फफूंदनाशक, दवाई
+ENGLISH: pest, disease, fungus, aphid, stem borer, blight, chemical,
+         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment)
+
+EXAMPLES:
+"soybean la stem borer zala, kay maru?" → CROP PROTECTION
+"tomato la early blight aahe" → CROP PROTECTION
+"cotton la mava aahe, konte chemical" → CROP PROTECTION
+"pane pivali padtat, kay hote?" → CROP PROTECTION (symptom diagnosis)
+"burshinashak sanga soybean sathi" → CROP PROTECTION
+"onion la purple blotch, dose kiti?" → CROP PROTECTION
+"grape la powdery mildew, Amistar chalel ka?" → CROP PROTECTION
+""",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "crop": types.Schema(type=types.Type.STRING,
+                description="Crop in English lowercase e.g. soybean, tomato, cotton. REQUIRED."),
+            "pest": types.Schema(
+                type=types.Type.ARRAY,
+                items=types.Schema(type=types.Type.STRING),
+                description="List of pest/disease names e.g. ['stem_borer', 'aphid']. Empty if symptom-only."),
+            "symptom": types.Schema(type=types.Type.STRING,
+                description="Visible symptom description if exact pest unknown e.g. 'leaves turning yellow'"),
+            "category_intent": types.Schema(type=types.Type.STRING,
+                description="Specific chemical category if farmer asked: 'fungicide'/'insecticide'/'herbicide'/'PGR'"),
+        },
+        required=["crop"],
+    ),
+)
+
+# Fix 2: FERTILIZER_TOOL added to TOOLS list
+TOOLS = [types.Tool(function_declarations=[MANDI_TOOL, WEATHER_TOOL, FERTILIZER_TOOL])]
 
 
 async def _route_to_endpoint(extraction: dict, message: str) -> dict:
@@ -356,13 +463,18 @@ Extracted:
 - Forecast days: {extraction.get('forecast_days', 7)}
 - Sowing date: {extraction.get('sowing_date', 'not mentioned')}
 - Harvest date: {extraction.get('harvest_date', 'not mentioned')}
+- Pest identified: {extraction.get('pest', 'none')}
+- Symptom described: {extraction.get('symptom', 'none')}
+- Chemical category: {extraction.get('category_intent', 'none')}
 - Intent: {extraction.get('raw_intent', 'unknown')}
 
-Call the correct tool. Remember: spray/फवारणी/drone = WEATHER always."""
+Call the correct tool. Key rules:
+- spray/फवारणी safety → WEATHER always
+- pest/disease TREATMENT or chemical needed → CROP PROTECTION
+- pest/disease RISK WINDOW forecast → WEATHER
+- price/sell/profit/mandi → MANDI"""
 
     try:
-        # Fix 3: native async
-        # NOTE: response_mime_type NOT used — incompatible with function calling
         response = await client.aio.models.generate_content(
             model=MODEL_ROUTING,
             contents=context,
@@ -370,18 +482,18 @@ Call the correct tool. Remember: spray/फवारणी/drone = WEATHER always
                 tools=TOOLS,
                 tool_config=types.ToolConfig(
                     function_calling_config=types.FunctionCallingConfig(
-                        mode="ANY"
+                        mode="ANY",
                     )
                 ),
                 temperature=0.0,
-            )
+            ),
         )
 
         function_call = None
         for part in response.candidates[0].content.parts:
-          if part.function_call:  # truthiness check, not existence check
-           function_call = part.function_call
-           break
+            if part.function_call:
+                function_call = part.function_call
+                break
 
         if not function_call:
             logger.error("[Orchestrator] No function call returned despite mode=ANY")
@@ -389,7 +501,17 @@ Call the correct tool. Remember: spray/फवारणी/drone = WEATHER always
 
         fn_name = function_call.name
         fn_args = dict(function_call.args)
-        service_type = "mandi" if fn_name == "get_mandi_prices" else "weather"
+
+        # Fix 6: explicit mapping — no silent else clause
+        if fn_name == "get_mandi_prices":
+            service_type = "mandi"
+        elif fn_name == "get_crop_protection":
+            service_type = "fertilizer"
+        elif fn_name == "get_weather_risk":
+            service_type = "weather"
+        else:
+            logger.error(f"[Orchestrator] Unknown function name from Gemini: {fn_name}")
+            service_type = None
 
         return {"service_type": service_type, "params": fn_args, "confidence": "high"}
 
@@ -398,13 +520,32 @@ Call the correct tool. Remember: spray/फवारणी/drone = WEATHER always
         return {"service_type": None, "params": {}, "confidence": "low"}
 
 
-# ─── Clarification & Response Messages ───────────────────────────────────────
+# ─── Clarification & Response Messages ────────────────────────────────────────
+# Fix 8: all strings updated to mention 3 services
 
 CLARIFICATION_MESSAGES = {
     "service": {
-        "mr": "🌾 नमस्कार! आम्ही दोन सेवा देतो:\n\n1️⃣ *मंडी भाव* — कुठे विकायचे, किती नफा\n2️⃣ *हवामान* — पाऊस, फवारणी, सिंचन\n\nतुम्हाला काय हवे आहे?",
-        "hi": "🌾 नमस्ते! हम दो सेवाएं देते हैं:\n\n1️⃣ *मंडी भाव* — कहाँ बेचें, कितना मुनाफा\n2️⃣ *मौसम* — बारिश, छिड़काव, सिंचाई\n\nआपको क्या चाहिए?",
-        "en": "🌾 Hello! We offer two services:\n\n1️⃣ *Mandi Prices* — where to sell, profit\n2️⃣ *Weather* — rain, spray safety, irrigation\n\nWhat would you like?",
+        "mr": (
+            "🌾 नमस्कार! आम्ही तीन सेवा देतो:\n\n"
+            "1️⃣ *मंडी भाव* — कुठे विकायचे, किती नफा\n"
+            "2️⃣ *हवामान* — पाऊस, फवारणी, सिंचन\n"
+            "3️⃣ *पीक संरक्षण* — कीड, रोग, कीटकनाशक सल्ला\n\n"
+            "तुम्हाला काय हवे आहे?"
+        ),
+        "hi": (
+            "🌾 नमस्ते! हम तीन सेवाएं देते हैं:\n\n"
+            "1️⃣ *मंडी भाव* — कहाँ बेचें, कितना मुनाफा\n"
+            "2️⃣ *मौसम* — बारिश, छिड़काव, सिंचाई\n"
+            "3️⃣ *फसल सुरक्षा* — कीट, रोग, कीटनाशक सलाह\n\n"
+            "आपको क्या चाहिए?"
+        ),
+        "en": (
+            "🌾 Hello! We offer three services:\n\n"
+            "1️⃣ *Mandi Prices* — where to sell, profit calculation\n"
+            "2️⃣ *Weather* — rain, spray safety, irrigation\n"
+            "3️⃣ *Crop Protection* — pest, disease, chemical advice\n\n"
+            "What would you like?"
+        ),
     },
     "crop": {
         "mr": "कोणत्या पिकाची माहिती हवी आहे?\n\nउदाहरण: सोयाबीन, कापूस, कांदा, तूर, गहू",
@@ -415,19 +556,24 @@ CLARIFICATION_MESSAGES = {
         "mr": "किती क्विंटल माल विकायचा?\n\nउदाहरण: 100 क्विंटल, 50 पोते",
         "hi": "कितना माल बेचना है?\n\nउदाहरण: 100 क्विंटल, 50 बोरी",
         "en": "How much quantity?\n\nExample: 100 quintals, 50 bags",
-    }
+    },
+    "pest": {
+        "mr": "कोणती कीड किंवा रोग आहे?\n\nउदाहरण: मावा, खोडकिडा, करपा, भुरी\nकिंवा लक्षणे सांगा: 'पाने पिवळी पडत आहेत'",
+        "hi": "कौन सा कीट या रोग है?\n\nउदाहरण: माहू, तना छेदक, झुलसा\nया लक्षण बताएं: 'पत्ते पीले हो रहे हैं'",
+        "en": "Which pest or disease?\n\nExample: aphid, stem borer, blight, powdery mildew\nOr describe symptoms: 'leaves turning yellow'",
+    },
 }
 
 NOT_HANDLED_MESSAGES = {
-    "mr": "माफ करा, हे आम्ही करत नाही.\n{redirect}\n\nआम्ही फक्त *मंडी भाव* आणि *हवामान* माहिती देतो.",
-    "hi": "माफ करें, यह हम नहीं करते।\n{redirect}\n\nहम सिर्फ *मंडी भाव* और *मौसम* जानकारी देते हैं।",
-    "en": "Sorry, we don't handle this.\n{redirect}\n\nWe only provide *mandi prices* and *weather* information.",
+    "mr": "माफ करा, हे आम्ही करत नाही.\n{redirect}\n\nआम्ही *मंडी भाव*, *हवामान* आणि *पीक संरक्षण* माहिती देतो.",
+    "hi": "माफ करें, यह हम नहीं करते।\n{redirect}\n\nहम *मंडी भाव*, *मौसम* और *फसल सुरक्षा* जानकारी देते हैं।",
+    "en": "Sorry, we don't handle this.\n{redirect}\n\nWe provide *mandi prices*, *weather* and *crop protection* advice.",
 }
 
 NOT_AGRI_MESSAGES = {
-    "mr": "माफ करा, आम्ही फक्त शेती विषयक मदत करतो — मंडी भाव आणि हवामान माहिती.",
-    "hi": "माफ करें, हम सिर्फ खेती से जुड़ी मदद करते हैं।",
-    "en": "Sorry, we only help with farming topics — mandi prices and weather.",
+    "mr": "माफ करा, आम्ही फक्त शेती विषयक मदत करतो — मंडी भाव, हवामान आणि पीक संरक्षण माहिती.",
+    "hi": "माफ करें, हम सिर्फ खेती से जुड़ी मदद करते हैं — मंडी भाव, मौसम और फसल सुरक्षा।",
+    "en": "Sorry, we only help with farming topics — mandi prices, weather and crop protection.",
 }
 
 
@@ -445,13 +591,14 @@ async def orchestrate(
         {
             "status": "routed"/"needs_clarification"/"not_handled"/
                       "not_agri"/"coming_soon"/"error",
-            "service_type": "mandi"/"weather"/None,
+            "service_type": "mandi"/"weather"/"fertilizer"/None,
             "reply_message": str,
             "session_updated": bool,
             "detected_language": str,
             "crop": str or None,
             "qty": str or None,
-        }
+            "needs_location": bool,   ← NEW: main.py uses this to decide
+        }                               whether to send location request button
     """
     logger.info(f"[Orchestrator] Processing: '{message[:60]}'")
 
@@ -459,7 +606,7 @@ async def orchestrate(
     preflight = await _preflight(message)
     logger.info(f"[Orchestrator] Preflight: {preflight}")
 
-    lang = "mr"  # Default Marathi until extraction detects language
+    lang = "mr"  # Default until extraction detects language
 
     if not preflight.get("is_agri"):
         return {
@@ -469,15 +616,16 @@ async def orchestrate(
             "session_updated": False,
             "detected_language": lang,
             "crop": None, "qty": None,
+            "needs_location": False,
         }
 
     if not preflight.get("is_handled"):
         redirect_key = preflight.get("redirect_key", "general")
 
-        # Fix 1: Coming soon intercept before hard rejection
         if redirect_key in COMING_SOON_KEYS:
-            reply = COMING_SOON_MESSAGES[redirect_key].get(lang,
-                    COMING_SOON_MESSAGES[redirect_key]["mr"])
+            reply = COMING_SOON_MESSAGES[redirect_key].get(
+                lang, COMING_SOON_MESSAGES[redirect_key]["mr"]
+            )
             return {
                 "status": "coming_soon",
                 "service_type": None,
@@ -485,9 +633,9 @@ async def orchestrate(
                 "session_updated": False,
                 "detected_language": lang,
                 "crop": None, "qty": None,
+                "needs_location": False,
             }
 
-        # Standard rejection with helpful redirect
         redirect_text = THINGS_WE_DONT_HANDLE.get(
             redirect_key, THINGS_WE_DONT_HANDLE["general"]
         )
@@ -499,14 +647,17 @@ async def orchestrate(
             "session_updated": False,
             "detected_language": lang,
             "crop": None, "qty": None,
+            "needs_location": False,
         }
 
     # ── Stage 2: Extraction ─────────────────────────────────────────────────
     extraction = await _extract_intent(message)
     lang = extraction.get("language", "mr")
-    logger.info(f"[Orchestrator] Extraction: crop={extraction.get('crop')}, "
-                f"qty={extraction.get('qty')}, lang={lang}, "
-                f"intent={extraction.get('raw_intent')}")
+    logger.info(
+        f"[Orchestrator] Extraction: crop={extraction.get('crop')}, "
+        f"qty={extraction.get('qty')}, pest={extraction.get('pest')}, "
+        f"lang={lang}, intent={extraction.get('raw_intent')}"
+    )
 
     if extraction.get("needs_clarification"):
         aspect = extraction.get("clarification_aspect", "service")
@@ -521,13 +672,16 @@ async def orchestrate(
             "session_updated": False,
             "detected_language": lang,
             "crop": None, "qty": None,
+            "needs_location": False,
         }
 
     # ── Stage 3: Routing ────────────────────────────────────────────────────
     routing = await _route_to_endpoint(extraction, message)
     service_type = routing.get("service_type")
-    logger.info(f"[Orchestrator] Routing → {service_type} "
-                f"(confidence: {routing.get('confidence')})")
+    logger.info(
+        f"[Orchestrator] Routing → {service_type} "
+        f"(confidence: {routing.get('confidence')})"
+    )
 
     if not service_type:
         reply = CLARIFICATION_MESSAGES["service"].get(
@@ -540,9 +694,11 @@ async def orchestrate(
             "session_updated": False,
             "detected_language": lang,
             "crop": None, "qty": None,
+            "needs_location": False,
         }
 
     # ── Save to session ─────────────────────────────────────────────────────
+    # Fix 5: pest/symptom/category_intent now saved to session
     session_store.update_session_data(
         session_id,
         service_type=service_type,
@@ -554,20 +710,47 @@ async def orchestrate(
         forecast_days=extraction.get("forecast_days", 7),
         sowing_date=extraction.get("sowing_date"),
         harvest_date=extraction.get("harvest_date"),
+        pest=extraction.get("pest"),
+        symptom=extraction.get("symptom"),
+        category_intent=extraction.get("category_intent"),
         language=lang,
         raw_intent=extraction.get("raw_intent", ""),
     )
 
-    # ── Acknowledgment message ──────────────────────────────────────────────
-    crop = extraction.get("crop", "")
+    crop = extraction.get("crop", "") or ""
 
+    # Fix 6+7: explicit ack per service, fertilizer gets NO location prompt
+    # needs_location tells main.py whether to send the location request button
     if service_type == "mandi":
+        needs_location = True
         ack = {
             "mr": f"✅ *{crop.title() if crop else 'पीक'} मंडी भाव*\n\n📍 आता तुमचे स्थान शेअर करा.",
             "hi": f"✅ *{crop.title() if crop else 'फसल'} मंडी भाव*\n\n📍 अब अपना स्थान शेयर करें।",
             "en": f"✅ *{crop.title() if crop else 'Crop'} Mandi Prices*\n\n📍 Please share your location.",
         }
-    else:
+
+    elif service_type == "fertilizer":
+        # Fix 7: fertilizer needs NO location — go straight to payment
+        needs_location = False
+        pest_mentioned = extraction.get("pest") or extraction.get("symptom")
+        ack = {
+            "mr": (
+                f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*\n\n"
+                f"{'🐛 ' + str(pest_mentioned) + '\n\n' if pest_mentioned else ''}"
+                "💳 पेमेंट करा आणि CIBRC-approved रासायनिक सल्ला मिळवा."
+            ),
+            "hi": (
+                f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*\n\n"
+                "💳 पेमेंट करें और CIBRC-approved रासायनिक सलाह पाएं।"
+            ),
+            "en": (
+                f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*\n\n"
+                "💳 Pay to get CIBRC-approved chemical recommendations."
+            ),
+        }
+
+    else:  # weather
+        needs_location = True
         ack = {
             "mr": f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n📍 आता तुमचे स्थान शेअर करा.",
             "hi": f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n📍 अब अपना स्थान शेयर करें।",
@@ -582,4 +765,5 @@ async def orchestrate(
         "detected_language": lang,
         "crop": crop,
         "qty": extraction.get("qty"),
+        "needs_location": needs_location,   # main.py uses this
     }
