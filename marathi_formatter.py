@@ -24,6 +24,8 @@ import logging
 import os
 import random
 from typing import Any, Optional
+from datetime import datetime
+import zoneinfo
 
 from google import genai
 from google.genai import types
@@ -109,7 +111,6 @@ async def _call_gemini(user_prompt: str) -> str:
 
 
 # ─── Service-specific formatters ──────────────────────────────────────────────
-
 async def format_weather_response(
     data: dict[str, Any],
     original_text: str = "",
@@ -118,8 +119,15 @@ async def format_weather_response(
     Formats /weather-risk JSON into actionable Marathi weather advisory.
     Highlights: rain forecast, spray windows, irrigation, pest risk windows.
     """
+    # 1. Grab current IST time so Gemini knows what "today" is
+    ist_zone = zoneinfo.ZoneInfo("Asia/Kolkata")
+    today_date = datetime.now(ist_zone).strftime("%A, %d %B %Y")
+    
     prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'हवामान माहिती'}"
 सेवा: हवामान जोखीम विश्लेषण
+
+CRITICAL INSTRUCTION: Today's date is {today_date} (Indian Standard Time). 
+You MUST provide the weather forecast starting from TODAY. Completely IGNORE any historical data from yesterday or before.
 
 JSON डेटा:
 {json.dumps(data, ensure_ascii=False, indent=2)}
