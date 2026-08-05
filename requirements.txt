@@ -10,7 +10,7 @@ python-dotenv
 
 # Algorand & x402
 py-algorand-sdk
-x402
+x402-avm[avm]
 httpx
 
 # Google AI
