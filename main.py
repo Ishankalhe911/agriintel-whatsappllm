@@ -451,12 +451,14 @@ async def _handle_location_message(
     session_id     = session.get("session_id")
     payment_status = session.get("payment_status")
 
-    # If already paid or payment pending, location is stale — ignore
-    if payment_status in ("paid", "pending"):
-        logger.info(
-            f"[Main] Location received but session {session_id} "
-            f"already in status '{payment_status}' — ignoring"
-        )
+    # 1. Block if already paid
+    if payment_status == "paid":
+        logger.info(f"[Main] Location received but session {session_id} is already paid — ignoring")
+        return
+
+    # 2. Block if a payment link was ALREADY sent (prevents link duplicate spam)
+    if session.get("payment_link_id"):
+        logger.info(f"[Main] Location received, but payment link already exists for {session_id} — ignoring")
         return
 
     # Save location to session
