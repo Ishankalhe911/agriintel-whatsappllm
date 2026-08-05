@@ -117,31 +117,34 @@ async def format_weather_response(
 ) -> str:
     """
     Formats /weather-risk JSON into actionable Marathi weather advisory.
-    Highlights: rain forecast, spray windows, irrigation, pest risk windows.
+    Uses today's date as a reference and dynamically shapes the response 
+    based on the farmer's specific intent.
     """
-    # 1. Grab current IST time so Gemini knows what "today" is
+    # Grab current IST date and time as a strict calendar reference
     ist_zone = zoneinfo.ZoneInfo("Asia/Kolkata")
-    today_date = datetime.now(ist_zone).strftime("%A, %d %B %Y")
+    now_ist = datetime.now(ist_zone)
+    today_date = now_ist.strftime("%A, %d %B %Y")
+    current_time = now_ist.strftime("%I:%M %p")
     
-    prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'हवामान माहिती'}"
+    prompt = f"""शेतकऱ्याचा प्रश्न/संदेश: "{original_text or 'पुढील हवामान कसे राहील?'}"
+
 सेवा: हवामान जोखीम विश्लेषण
 
-CRITICAL INSTRUCTION: Today's date is {today_date} (Indian Standard Time). 
-You MUST provide the weather forecast starting from TODAY. Completely IGNORE any historical data from yesterday or before.
+CRITICAL CALENDAR REFERENCE: 
+- Today's date is {today_date}. Current time is {current_time} IST. 
+- Use this strictly to understand temporal words in the farmer's prompt like "today" (आज), "tomorrow" (उद्या), "day after" (परवा), or "next few days" (पुढील काही दिवस).
+- NEVER use historical data (yesterday or before). 
 
 JSON डेटा:
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-यातून शेतकऱ्यासाठी व्यावहारिक हवामान माहिती द्या:
-- पुढील काही दिवसांत पाऊस येणार का? कधी?
-- फवारणी करता येईल का? कोणत्या तारखा सर्वोत्तम?
-- सिंचन करायला हवे का?
-- कोणत्या रोगांचा/किडींचा धोका आहे?
-- उष्णता किंवा जोराचा वारा असेल तर सांगा.
-फक्त JSON मध्ये असलेली माहिती द्या."""
+SMART FORMATTING INSTRUCTIONS (मराठीत उत्तर द्या):
+१. शेतकऱ्याने जो प्रश्न विचारला आहे, त्याचे थेट आणि अचूक उत्तर द्या. (उदा. त्यांनी फक्त 'परवा' बद्दल विचारले असेल, तर परवाच्या तारखेची माहिती द्या).
+२. जर प्रश्न सामान्य असेल (उदा. "पाऊस कधी पडेल?"), तर JSON मधील सर्व उपलब्ध डेटा वापरून पुढील काही दिवसांचा कल (trend) स्पष्ट करा. 
+३. जर हवामानात फवारणी, सिंचन किंवा रोगराईचा धोका (Risk) असेल, तर शेतकऱ्याला सावध करा.
+४. फक्त JSON मधील डेटा वापरा. डेटाच्या बाहेर जाऊन अंदाज वर्तवू नका."""
 
     return await _call_gemini(prompt)
-
 
 async def format_mandi_response(
     data: dict[str, Any],
