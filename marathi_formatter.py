@@ -17,6 +17,23 @@ FIXES APPLIED vs original version:
               not as first item in contents[] list
     ✅ Fix 7: x402 error detection checks error=True (bool key) not status="error"
     ✅ Fix 8: Client built fresh per call — no module-level client=None risk
+
+PROMPT ARCHITECTURE UPGRADES (ported from GPT-4.1-mini reference version):
+    ✅ Fix 9:  System prompt is now rules-first, persona second — Gemini processes
+              system_instruction top-down, so rules having priority prevents
+              persona tone overriding structural constraints.
+    ✅ Fix 10: Rule added — null/missing JSON fields are silently skipped, not
+              printed as "not available" or "null".
+    ✅ Fix 11: Each service prompt now has a JSON FIELD GUIDE before the data dump
+              so Gemini understands what each field means before reading values.
+              Weather alone has 50+ fields; without a guide, rare fields get skipped.
+    ✅ Fix 12: Weather prompt — spray_window_ok, delta_t_c thresholds, and
+              pest_pressure_index scale explained so model applies them correctly.
+    ✅ Fix 13: Mandi prompt — field→meaning mapping + ordered response structure +
+              data_freshness_hours staleness warning.
+    ✅ Fix 14: Fertilizer prompt — layer_used confidence ladder, dosage contradiction
+              fixed (only report dose if JSON has it), confidence=low flagging.
+    ✅ Fix 15: temperature lowered 0.3 → 0.25 for tighter factual output.
 """
 
 import json
@@ -42,7 +59,7 @@ _GEMINI_KEYS = [
     os.getenv("GEMINI_API_KEY_5"),
 ]
 
-MODEL = "gemini-3.1-flash-lite"
+MODEL = "gemini-3.5-flash-lite"
 
 
 def _get_client() -> genai.Client:
@@ -59,19 +76,20 @@ def _get_client() -> genai.Client:
 
 # ─── System prompt ────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """तुम्ही एक अनुभवी महाराष्ट्रीयन कृषी तज्ञ आणि WhatsApp सहाय्यक आहात.
-तुमचे काम म्हणजे कच्च्या JSON डेटाला शेतकऱ्यांसाठी स्पष्ट, उपयुक्त मराठीत रूपांतरित करणे.
+_SYSTEM_PROMPT = """WHATSAPP FORMATTING RULES — follow these exactly:
+1. Use only Marathi language (Devanagari script) in your response.
+2. Bold: use *single asterisk* only — never **double**, never # headers.
+3. Lists: use - or • bullet characters only.
+4. NEVER print JSON keys, field names, null, undefined, or database identifiers.
+5. NEVER invent data not present in the JSON — no guessed prices, doses, or dates.
+6. Use relevant emojis: 🌾 🌧️ 🐛 💰 🚜 💡 🧪 ⚠️ ✅ ☀️ 🌱
+7. Keep paragraphs short — WhatsApp mobile screen, not a desktop browser.
+8. End every response with an encouraging sign-off line.
+9. If a JSON field is null or missing, skip it entirely — do not say "not available".
 
-WHATSAPP FORMATTING RULES (कठोरपणे पाळा):
-1. फक्त मराठी भाषा वापरा (Devanagari script).
-2. Bold साठी फक्त *एकच asterisk* वापरा — **double** नाही, # header नाही.
-3. Lists साठी फक्त - किंवा • वापरा.
-4. JSON keys, null values, database field names कधीही print करू नका.
-5. JSON मध्ये नसलेली माहिती (किंमत, डोस, वेळ) कधीही स्वतःहून जोडू नका.
-6. संबंधित emojis वापरा: 🌾 🌧️ 🐛 💰 🚜 💡 🧪 ⚠️ ✅
-7. Mobile screen साठी छोटे paragraphs ठेवा.
-8. शेवटी नेहमी उत्साहवर्धक sign-off द्या.
-"""
+तुम्ही एक अनुभवी महाराष्ट्रीयन कृषी तज्ञ आहात जे WhatsApp वर शेतकऱ्यांना
+सोप्या, उपयुक्त भाषेत सल्ला देता. तुमचा सल्ला नेहमी JSON मधील डेटावर आधारित
+असतो — तुम्ही कधीही स्वतःहून माहिती जोडत नाही."""
 
 # ─── Error response builder ───────────────────────────────────────────────────
 
@@ -97,7 +115,7 @@ async def _call_gemini(user_prompt: str) -> str:
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
-                temperature=0.3,        # low temp for factual precision
+                temperature=0.25,       # tighter for factual precision (JSON data)
                 max_output_tokens=2048,
             ),
         )
@@ -130,31 +148,51 @@ async def format_weather_response(
     today_human = now_ist.strftime("%d %B %Y (%A)")    # e.g. 06 August 2026 (Wednesday)
     current_time = now_ist.strftime("%I:%M %p IST")
 
-    prompt = f"""शेतकऱ्याचा प्रश्न/संदेश: "{original_text or 'पुढील हवामान कसे राहील?'}"
+    prompt = f"""शेतकऱ्याचा प्रश्न: "{original_text or 'पुढील हवामान कसे राहील?'}"
 
-सेवा: हवामान जोखीम विश्लेषण
+CRITICAL DATE ANCHOR — JSON वाचण्यापूर्वी हे वाचा:
+- आजची तारीख: {today_iso} ({today_human}). वेळ: {current_time}.
+- daily_preview मधील सर्व entries FORECAST आहेत — {today_iso} सुद्धा.
+  कोणताही entry historical नाही. {today_iso} entry skip करू नका.
+- Date mapping:
+    "आज"   → {today_iso}
+    "उद्या" → JSON मधील {today_iso} नंतरची पुढची तारीख
+    "परवा" → त्यानंतरची तारीख
+- JSON मध्ये YYYY-MM-DD format आहे. शेतकऱ्यासाठी "६ ऑगस्ट" सारख्या नैसर्गिक
+  मराठी format मध्ये सांगा.
 
-CRITICAL DATE ANCHOR (read carefully before interpreting any date in the JSON):
-- Today's date is {today_iso} ({today_human}). Current time is {current_time}.
-- The JSON key "daily_preview" contains ONLY FORECAST data. Every entry in
-  daily_preview is a future forecast — including the entry for {today_iso}
-  (today). None of it is historical. Do NOT skip or ignore the {today_iso} entry.
-- Map temporal words using this anchor:
-    "आज" / "today"      → {today_iso}
-    "उद्या" / "tomorrow" → the date immediately after {today_iso} in the JSON
-    "परवा" / "day after" → two entries after {today_iso}
-- Use YYYY-MM-DD dates from the JSON to identify days. When presenting dates
-  to the farmer, convert them to natural Marathi format (e.g. "६ ऑगस्ट").
+JSON FIELD GUIDE — हे fields काय सांगतात (JSON वाचण्यापूर्वी समजून घ्या):
+- daily_preview[].date: YYYY-MM-DD तारीख
+- rain_mm: त्या दिवशी किती पाऊस पडेल (mm)
+- t_max_c / t_min_c: कमाल/किमान तापमान (°C)
+- rh_max_pct / rh_min_pct: आर्द्रता श्रेणी (%)
+- wind_kmh: वाऱ्याचा वेग (kmh)
+- wcode: हवामान कोड (95=गडगडाट, 51=हलका पाऊस, 0/1=स्वच्छ)
+- spray_window_ok=true → फवारणीसाठी योग्य दिवस; false → फवारणी टाळा
+- delta_t_c: 2-8°C = आदर्श फवारणी श्रेणी; <2 = inversion risk; >8 = खूप गरम/कोरडे
+- pest_pressure_index: 0-3=कमी धोका, 4-6=मध्यम, 7-10=जास्त धोका ⚠️
+- gdd_base10: पीक वाढीचे मोजमाप (Growth Degree Days)
+- next_rain_date: पुढचा पाऊस कधी येईल
+- next_dry_spell: कोरड्या दिवसांचा कालावधी (सिंचनासाठी उपयुक्त)
+- optimal_drone_spray_dates: ड्रोन फवारणीसाठी सर्वोत्तम दिवस
+- wind_risk_days: जास्त वारा — फवारणी drift होण्याचा धोका
+- pest_disease_risk_windows: रोग/कीड येण्याची शक्यता असलेले दिवस
+- irrigation_recommended: सिंचन करायचे का (true/false)
+- net_water_balance_7d: पाऊस - ET0 = पाण्याचा ताळेबंद (negative = दुष्काळ)
+- subseasonal: 3-4 आठवड्यांचा ECMWF दीर्घकालीन अंदाज
+- enso_iod_state: monsoon वर परिणाम करणाऱ्या हवामान शक्ती
 
 JSON डेटा:
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-FORMATTING INSTRUCTIONS (मराठीत उत्तर द्या):
-१. शेतकऱ्याने जो प्रश्न विचारला आहे, त्याचे थेट आणि अचूक उत्तर द्या.
-   (उदा. त्यांनी फक्त 'परवा' बद्दल विचारले असेल, तर परवाच्या तारखेची माहिती द्या).
-२. जर प्रश्न सामान्य असेल, तर JSON मधील सर्व उपलब्ध डेटा वापरून पुढील काही दिवसांचा कल (trend) स्पष्ट करा.
-३. जर हवामानात फवारणी, सिंचन किंवा रोगराईचा धोका असेल, तर शेतकऱ्याला सावध करा.
-४. फक्त JSON मधील डेटा वापरा. डेटाच्या बाहेर जाऊन अंदाज वर्तवू नका."""
+MARATHI RESPONSE — मराठीत उत्तर द्या:
+१. शेतकऱ्याने जो प्रश्न विचारला त्याचे थेट उत्तर द्या.
+   - फक्त "परवा" विचारले → फक्त त्या दिवसाची माहिती द्या.
+   - सामान्य प्रश्न → पुढील 3-5 दिवसांचा trend.
+२. spray_window_ok=true असलेले दिवस स्पष्टपणे सांगा (फवारणी योग्य दिवस).
+३. pest_pressure_index ≥7 असेल तर ⚠️ सावधानता द्या.
+४. irrigation_recommended=true असेल तर सिंचनाचा सल्ला द्या.
+५. फक्त JSON मधील डेटा वापरा — अंदाज किंवा सामान्य ज्ञान नको."""
 
     return await _call_gemini(prompt)
 
@@ -166,18 +204,34 @@ async def format_mandi_response(
     Formats /mandi-optimize JSON into Marathi market advisory.
     Highlights: best mandis, prices, transport cost, net profit range.
     """
-    prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'मंडी भाव माहिती'}"
-सेवा: मंडी भाव आणि नफा विश्लेषण
+    prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'मंडई भाव सांगा'}"
+
+JSON FIELD GUIDE — हे fields काय सांगतात (JSON वाचण्यापूर्वी समजून घ्या):
+- mandis[]: जवळच्या मंडींची यादी, best first
+- mandi_name / district: मंडीचे नाव आणि जिल्हा
+- distance_km: शेतकऱ्याच्या ठिकाणापासून अंतर (km)
+- modal_price_per_quintal: आजचा मुख्य बाजार भाव (रु/क्विंटल)
+- min_price / max_price: त्या मंडीत आज किती कमी-जास्त मिळाला
+- transport_cost_est: घरापासून त्या मंडीपर्यंत वाहतूक खर्च (रु, अंदाजे)
+- apmc_commission_pct: APMC कमिशन टक्केवारी
+- net_profit_per_quintal_est: भाव - वाहतूक - कमिशन = निव्वळ नफा (रु/क्विंटल)
+- arrival_trend: "rising"=भाव वाढत आहेत, "falling"=कमी होत आहेत, "stable"=स्थिर
+- qty_quintals: शेतकऱ्याचे एकूण क्विंटल (total profit साठी वापरा)
+- data_freshness_hours: हा डेटा किती तासांपूर्वीचा आहे
 
 JSON डेटा:
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-यातून शेतकऱ्यासाठी स्पष्ट मंडी सल्ला द्या:
-- कोणत्या मंडीत सर्वाधिक भाव मिळेल? (रु/क्विंटल)
-- वाहतूक खर्च किती असेल?
-- निव्वळ नफा किती होईल? (conservative ते optimistic range)
-- आज विकावे की थांबावे?
-- APMC कर/कमिशन किती कापला जाईल?
+MARATHI RESPONSE — या क्रमाने सांगा:
+१. *सर्वोत्तम मंडी* — net_profit_per_quintal_est सर्वाधिक असलेली मंडी.
+   नाव, जिल्हा, अंतर, आणि modal_price_per_quintal सांगा.
+२. *भाव range* — त्या मंडीत आज min_price ते max_price किती मिळाला?
+३. *वाहतूक आणि APMC* — transport_cost_est आणि apmc_commission_pct किती?
+४. *निव्वळ नफा* — qty_quintals असेल तर total profit range सांगा.
+   (conservative = min_price वापरा; optimistic = max_price वापरा)
+५. *भाव कल* — arrival_trend वरून आज विकावे का थांबावे?
+६. data_freshness_hours >24 असेल तर ⚠️ "डेटा जुना आहे, मंडीत जाण्यापूर्वी भाव तपासा" सांगा.
+
 नक्कल एकच आकडा देऊ नका — नेहमी range द्या (कमी ते जास्त)."""
 
     return await _call_gemini(prompt)
@@ -191,19 +245,39 @@ async def format_fertilizer_response(
     Formats /fertilizer-info JSON into Marathi crop protection guide.
     Highlights: chemical names, brand names, dosage, waiting period.
     """
-    prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'कीड/रोग माहिती'}"
-सेवा: पीक संरक्षण आणि कीडनाशक सल्ला
+    prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'कीड/रोग माहिती सांगा'}"
+
+JSON FIELD GUIDE — हे fields काय सांगतात (JSON वाचण्यापूर्वी समजून घ्या):
+- pest_identified / disease_identified: कोणती कीड/रोग आढळली
+- recommendations[]: शिफारशींची यादी (एक किंवा अधिक)
+- active_ingredient: रासायनिक घटकाचे शास्त्रीय नाव
+- category: insecticide=कीडनाशक, fungicide=बुरशीनाशक, herbicide=तणनाशक,
+            bio-pesticide=जैविक कीडनाशक, PGR=वाढ नियंत्रक
+- dose_per_15L: 15 लिटर पंपास किती ml/g घालायचे
+- dose_per_acre: एकरी किती द्यायचे
+- waiting_period_days: काढणीपूर्वी किती दिवस थांबायचे (Pre-Harvest Interval)
+- brand_names[]: दुकानात कोणत्या नावाने मागायचे
+- confidence: high=खात्रीशीर माहिती; medium=साधारण; low=अंदाजे — flag करा
+- layer_used: 1=CIBRC सरकारी यादी (सर्वात विश्वासार्ह), 2=कृषी विद्यापीठ,
+              3=Search, 4=AI अंदाज (कमी विश्वासार्ह — नेहमी flag करा)
+- warning: कोणतीही महत्त्वाची सावधानता
 
 JSON डेटा:
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-यातून शेतकऱ्यासाठी step-by-step सल्ला द्या:
-- कोणती कीड/रोग आढळली?
-- कोणते कीडनाशक/बुरशीनाशक वापरायचे? (active ingredient + brand name)
-- 15 लिटर पंपास किती डोस? किंवा एकरी किती?
-- काढणीपूर्वी किती दिवस थांबायचे? (waiting period)
-- कोणत्या ब्रँडची नावे महाराष्ट्रात मिळतात?
-फक्त JSON मध्ये असलेली माहिती द्या — स्वतःहून डोस जोडू नका."""
+MARATHI RESPONSE — या क्रमाने सांगा:
+१. *कोणती कीड/रोग* — pest_identified किंवा disease_identified सांगा.
+२. *उपाय* — recommendations[] मधून प्रत्येक शिफारशीसाठी:
+   - active_ingredient + category (मराठीत: कीडनाशक/बुरशीनाशक/इ.)
+   - brand_names[] मधून 2-3 नावे ("दुकानात ___ नावाने मागा")
+   - DOSAGE RULE: dose_per_15L किंवा dose_per_acre JSON मध्ये असेल तरच सांगा.
+     नसेल तर: "डोससाठी कृषी सेवा केंद्राला विचारा." — स्वतःहून डोस कधीही सांगू नका.
+   - waiting_period_days असेल तर: "काढणीपूर्वी ___ दिवस थांबा"
+३. confidence=low किंवा layer_used=4 असेल तर ⚠️ सांगा:
+   "ही माहिती अंदाजे आहे — कृपया कृषी विभागाकडून खात्री करा."
+४. warning field असेल तर ते स्पष्टपणे सांगा.
+
+महत्त्वाचे: JSON मध्ये dose नसेल तर स्वतःहून कधीही डोस सांगू नका."""
 
     return await _call_gemini(prompt)
 
