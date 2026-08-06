@@ -378,13 +378,32 @@ async def _handle_expired(
     Mark session expired, send message, issue a fresh payment link.
     Fresh link reuses same session_id — no re-extraction needed.
     """
-    # ── Idempotency: if already paid, stale expired webhook — skip ─────────
-    if session.get("payment_status") == "paid":
+    # ── Idempotency guards ─────────────────────────────────────────────────
+    current_status = session.get("payment_status")
+
+    if current_status == "paid":
+        # Stale expired webhook arriving after farmer already paid — skip entirely.
+        # Do NOT clear the session; wallet_monitor._handle_paid already delivered.
         logger.info(
-            f"[WalletMonitor] Ignoring 'expired' webhook — "
-            f"session {session_id} already paid"
+            f"[WalletMonitor] Expired webhook for already-paid session "
+            f"{session_id} — ignoring"
         )
         return
+
+    if current_status == "expired":
+        # Razorpay retry of the same expired event — already handled.
+        logger.info(
+            f"[WalletMonitor] Duplicate expired webhook for session "
+            f"{session_id} — ignoring"
+        )
+        return
+
+    # Bug 2 fix: original code checked payment_link_id to decide whether to
+    # send an "awaiting payment" reminder — this was wrong.  A session that
+    # Razorpay just told us expired should always be marked expired and a fresh
+    # link issued.  The payment_link_id guard was silently swallowing the expiry
+    # event for every normal session (which always has a link_id by the time
+    # Razorpay fires the expiry webhook).
 
     store.update_payment_status(session_id, "expired")
     logger.info(f"[WalletMonitor] Payment link expired for session {session_id}")

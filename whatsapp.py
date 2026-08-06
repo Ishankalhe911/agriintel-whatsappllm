@@ -114,6 +114,26 @@ def verify_signature(raw_body: bytes, signature_header: Optional[str]) -> bool:
 
 # ─── 3. Deduplication (Meta retries webhook delivery) ────────────────────────
 
+_redis_client = None  # module-level singleton — Bug 3 fix
+
+def _get_dedup_client():
+    """
+    Returns a module-level Redis client singleton.
+
+    Bug 3: the original code called get_redis_client() on every request,
+    creating a new connection pool each time.  Under Meta retry bursts
+    (which fire within milliseconds of each other) two concurrent requests
+    could both open fresh connections, both execute SET NX before the other's
+    key was visible to the connection pool, and both return was_set=True
+    (i.e. both believing they were first).  A shared client uses a single
+    connection pool so the atomic SET NX guarantee actually holds.
+    """
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = get_redis_client()
+    return _redis_client
+
+
 def is_duplicate_message(message_id: str) -> bool:
     """
     Meta may deliver the same webhook event more than once (retries on
@@ -125,7 +145,7 @@ def is_duplicate_message(message_id: str) -> bool:
     if not message_id:
         return False
     try:
-        client = get_redis_client()
+        client = _get_dedup_client()
         key = f"wa_seen:{message_id}"
         was_set = client.set(key, "1", nx=True, ex=_DEDUP_TTL_SECONDS)
         return not was_set  # if set failed (key existed), it's a duplicate

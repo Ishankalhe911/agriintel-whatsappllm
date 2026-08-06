@@ -47,6 +47,7 @@ import asyncio
 import json
 import logging
 import os
+from typing import Optional, Tuple
 
 
 
@@ -314,6 +315,105 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
         await send_text(phone, _UNSUPPORTED_MSG.get(lang, _UNSUPPORTED_MSG["mr"]))
 
 
+# ─── Geocoding helper (text location fallback — Bug 1) ───────────────────────
+
+async def _geocode_text_location(text: str) -> Optional[Tuple[float, float]]:
+    """
+    Tries to geocode a free-text location string (village / taluka / district)
+    using the Nominatim API (no key required, rate-limited to 1 req/s).
+
+    Returns (lat, lon) tuple if confident, None if not found or ambiguous.
+    Called only when session needs location and farmer typed text instead of
+    tapping the location button.
+
+    Fail-open on every error — worst case farmer gets the "awaiting location"
+    reminder and taps the button instead.
+    """
+    if not text or len(text.strip()) > 80:
+        return None
+
+    # ── Agri keyword guard — don't geocode a new crop/pest question ───────
+    _AGRI_SIGNALS = {
+        "पीक", "शेत", "रोग", "कीड", "खत", "फवारणी", "बियाणे",
+        "crop", "pest", "disease", "spray", "fertilizer", "weather",
+        "हवामान", "मंडी", "भाव", "किंमत", "price", "mandi",
+    }
+    text_lower = text.lower().strip()
+    if any(sig.lower() in text_lower for sig in _AGRI_SIGNALS):
+        return None
+
+    # ── Query normalisation ────────────────────────────────────────────────
+    # Strip common abbreviations so "pune mh" → "pune" before appending state.
+    _MH_ALIASES = {"maharashtra", "maha", "mh", "महाराष्ट्र", "india", "भारत"}
+    # Also strip "india" variants so we control the suffix ourselves.
+    tokens = [t for t in text_lower.split() if t not in _MH_ALIASES]
+    clean_text = " ".join(tokens).strip(" ,")
+
+    # ── Smart Maharashtra append ───────────────────────────────────────────
+    # Only append if the farmer hasn't already included the state in any form.
+    # This prevents "Shirur, Pune, Maharashtra, India, Maharashtra, India".
+    _MH_PRESENT = {"maharashtra", "maha", "mh", "महाराष्ट्र"}
+    already_has_state = any(alias in text_lower for alias in _MH_PRESENT)
+    if already_has_state:
+        query = f"{clean_text}, India"
+    else:
+        query = f"{clean_text}, Maharashtra, India"
+
+    logger.info(f"[Geocode] Query: '{query}'")
+
+    try:
+        import httpx
+
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {
+            "q": query,
+            "format": "json",
+            "limit": 1,
+            "countrycodes": "in",
+            # Bias results toward Maharashtra bounding box so "Shirur" picks
+            # Pune district (18.8°N, 74.4°E) not Karnataka (15.1°N, 76.9°E).
+            "viewbox": "72.5,22.1,80.9,15.5",   # Maharashtra rough bbox
+            "bounded": "0",                        # soft bias, not hard clip
+        }
+        headers = {
+            # Nominatim policy: must identify app + contact email or IP gets banned.
+            "User-Agent": "Farmyworth-AgriIntel/1.0 (contact@farmyworth.com)",
+        }
+
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            resp = await http.get(url, params=params, headers=headers)
+
+        # ── Explicit 429 handling ──────────────────────────────────────────
+        if resp.status_code == 429:
+            logger.warning(
+                "[Geocode] Nominatim rate-limited (429) — failing open. "
+                "Farmer will get location reminder instead."
+            )
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(f"[Geocode] Nominatim returned {resp.status_code}")
+            return None
+
+        results = resp.json()
+        if not results:
+            logger.info(f"[Geocode] No results for '{query}'")
+            return None
+
+        top = results[0]
+        lat = float(top["lat"])
+        lon = float(top["lon"])
+        logger.info(
+            f"[Geocode] '{text}' → lat={lat}, lon={lon} "
+            f"(resolved: {top.get('display_name', '')})"
+        )
+        return lat, lon
+
+    except Exception as e:
+        logger.warning(f"[Geocode] Failed for '{text}': {e}")
+        return None
+
+
 # ─── Text message handler ─────────────────────────────────────────────────────
 
 async def _handle_text_message(
@@ -337,13 +437,34 @@ async def _handle_text_message(
     # ── Handle existing session states ─────────────────────────────────────
     if session:
         current_status = session.get("payment_status")
-        
+
         if current_status == "pending":
+            session_id = session.get("session_id", "")
+
+            # Bug 1 fix: if session needs location but farmer typed a place name
+            # instead of tapping the button, try to geocode the text first.
+            # Only attempt this when no payment_link_id exists yet (location not
+            # yet resolved) and the session service_type needs location.
+            needs_loc_service = session.get("service_type") in ("mandi", "weather")
+            if needs_loc_service and not session.get("payment_link_id"):
+                coords = await _geocode_text_location(text)
+                if coords:
+                    lat, lon = coords
+                    success = store.update_location(session_id, lat=lat, lon=lon)
+                    if success:
+                        logger.info(
+                            f"[Main] Geocoded text location '{text}' → "
+                            f"lat={lat}, lon={lon} for session {session_id}"
+                        )
+                        await _send_payment(phone, session_id, lang)
+                        return
+                    # If save failed fall through to normal flow (send reminder)
+
             # Check if they have a payment link id — if so, remind them
             if session.get("payment_link_id"):
                 await send_text(phone, _AWAITING_PAYMENT_MSG.get(lang, _AWAITING_PAYMENT_MSG["mr"]))
                 return
-                
+
         elif current_status == "paid":
             # PREVENT STATE LEAK: Old session is finished. 
             # Clear it from Redis and set local variable to None so a fresh one is created below.

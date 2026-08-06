@@ -123,25 +123,37 @@ async def format_weather_response(
     # Grab current IST date and time as a strict calendar reference
     ist_zone = zoneinfo.ZoneInfo("Asia/Kolkata")
     now_ist = datetime.now(ist_zone)
-    today_date = now_ist.strftime("%A, %d %B %Y")
-    current_time = now_ist.strftime("%I:%M %p")
-    
+    # Keep YYYY-MM-DD format so it matches the JSON date keys exactly —
+    # mixing "06 August 2026" (human) with "2026-08-06" (JSON) caused
+    # Gemini to misalign dates by one day.
+    today_iso  = now_ist.strftime("%Y-%m-%d")          # e.g. 2026-08-06
+    today_human = now_ist.strftime("%d %B %Y (%A)")    # e.g. 06 August 2026 (Wednesday)
+    current_time = now_ist.strftime("%I:%M %p IST")
+
     prompt = f"""शेतकऱ्याचा प्रश्न/संदेश: "{original_text or 'पुढील हवामान कसे राहील?'}"
 
 सेवा: हवामान जोखीम विश्लेषण
 
-CRITICAL CALENDAR REFERENCE: 
-- Today's date is {today_date}. Current time is {current_time} IST. 
-- Use this strictly to understand temporal words in the farmer's prompt like "today" (आज), "tomorrow" (उद्या), "day after" (परवा), or "next few days" (पुढील काही दिवस).
-- NEVER use historical data (yesterday or before). 
+CRITICAL DATE ANCHOR (read carefully before interpreting any date in the JSON):
+- Today's date is {today_iso} ({today_human}). Current time is {current_time}.
+- The JSON key "daily_preview" contains ONLY FORECAST data. Every entry in
+  daily_preview is a future forecast — including the entry for {today_iso}
+  (today). None of it is historical. Do NOT skip or ignore the {today_iso} entry.
+- Map temporal words using this anchor:
+    "आज" / "today"      → {today_iso}
+    "उद्या" / "tomorrow" → the date immediately after {today_iso} in the JSON
+    "परवा" / "day after" → two entries after {today_iso}
+- Use YYYY-MM-DD dates from the JSON to identify days. When presenting dates
+  to the farmer, convert them to natural Marathi format (e.g. "६ ऑगस्ट").
 
 JSON डेटा:
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-SMART FORMATTING INSTRUCTIONS (मराठीत उत्तर द्या):
-१. शेतकऱ्याने जो प्रश्न विचारला आहे, त्याचे थेट आणि अचूक उत्तर द्या. (उदा. त्यांनी फक्त 'परवा' बद्दल विचारले असेल, तर परवाच्या तारखेची माहिती द्या).
-२. जर प्रश्न सामान्य असेल (उदा. "पाऊस कधी पडेल?"), तर JSON मधील सर्व उपलब्ध डेटा वापरून पुढील काही दिवसांचा कल (trend) स्पष्ट करा. 
-३. जर हवामानात फवारणी, सिंचन किंवा रोगराईचा धोका (Risk) असेल, तर शेतकऱ्याला सावध करा.
+FORMATTING INSTRUCTIONS (मराठीत उत्तर द्या):
+१. शेतकऱ्याने जो प्रश्न विचारला आहे, त्याचे थेट आणि अचूक उत्तर द्या.
+   (उदा. त्यांनी फक्त 'परवा' बद्दल विचारले असेल, तर परवाच्या तारखेची माहिती द्या).
+२. जर प्रश्न सामान्य असेल, तर JSON मधील सर्व उपलब्ध डेटा वापरून पुढील काही दिवसांचा कल (trend) स्पष्ट करा.
+३. जर हवामानात फवारणी, सिंचन किंवा रोगराईचा धोका असेल, तर शेतकऱ्याला सावध करा.
 ४. फक्त JSON मधील डेटा वापरा. डेटाच्या बाहेर जाऊन अंदाज वर्तवू नका."""
 
     return await _call_gemini(prompt)
