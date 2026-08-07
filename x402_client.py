@@ -256,10 +256,13 @@ async def call_mandi_optimize(
     Note: crop=None is valid (discovery mode). Endpoint returns nearest mandis
     without profit calc. qty_quintals without crop is ignored by endpoint.
     """
+    _VALID_HORIZONS = {"now", "tomorrow", "week"}
+    raw_horizon = str(time_horizon).lower().strip() if time_horizon else "now"
+    safe_horizon = raw_horizon if raw_horizon in _VALID_HORIZONS else "now"
     payload: dict = {
         "lat": float(lat),
         "lon": float(lon),
-        "time_horizon": str(time_horizon),
+        "time_horizon": safe_horizon,
         "radius_km": min(int(radius_km), 150),
     }
     if crop:
