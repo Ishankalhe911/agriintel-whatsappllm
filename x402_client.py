@@ -191,9 +191,10 @@ async def call_weather_risk(
 
     logger.info(
         f"[x402] weather-risk → lat={lat}, lon={lon}, crop={crop}, "
-        f"forecast_days={payload['forecast_days']}, harvest_date={harvest_date}"
+        f"forecast_days={payload['forecast_days']}, harvest_date={harvest_date}",
+        
     )
-
+    
     try:
         client, float_address = _build_client()
 
@@ -272,6 +273,7 @@ async def call_mandi_optimize(
         f"[x402] mandi-optimize → lat={lat}, lon={lon}, crop={crop}, "
         f"qty={qty_quintals}, radius={radius_km}km, horizon={time_horizon}"
     )
+    logger.info(f"[x402] mandi payload being sent: {str(payload)}")  # ← ADD THIS LINE
 
     try:
         client, float_address = _build_client()
