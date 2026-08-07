@@ -262,7 +262,7 @@ async def call_mandi_optimize(
     payload: dict = {
         "lat": float(lat),
         "lon": float(lon),
-        "time_horizon": safe_horizon,
+        "time_horizon": "now",
         "radius_km": min(int(radius_km), 150),
     }
     if crop:
