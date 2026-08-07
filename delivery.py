@@ -114,7 +114,7 @@ async def deliver(session: dict) -> dict:
             crop=crop,                              # optional — None = discovery mode
             variety=session.get("variety"),
             qty_quintals=qty_float,
-            time_horizon=session.get("time_horizon", "now"),
+            time_horizon="now",
             radius_km=radius,
         )
 
