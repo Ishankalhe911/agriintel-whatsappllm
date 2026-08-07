@@ -341,6 +341,16 @@ async def _handle_paid(
 
     # ── Format and send to farmer ──────────────────────────────────────────
     try:
+        # DEBUG: log what the formatter actually receives — remove after confirming
+        # mandi hallucination bug is fixed
+        logger.info(
+            f"[WalletMonitor] Formatter input | service={service_type} | "
+            f"result_keys={list(result.keys())} | "
+            f"top_mandis={[m.get('market') for m in result.get('top_mandis', [])]}"
+            if service_type == 'mandi' else
+            f"[WalletMonitor] Formatter input | service={service_type} | "
+            f"result_keys={list(result.keys())}"
+        )
         formatted = await format_response_for_whatsapp(
             service_type=service_type,
             raw_data=result,
