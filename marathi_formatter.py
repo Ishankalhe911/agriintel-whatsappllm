@@ -238,81 +238,87 @@ async def format_mandi_response(
     data: dict[str, Any],
     original_text: str = "",
 ) -> str:
+    """
+    Formats /mandi-optimize JSON into Marathi market advisory.
+    Acts as an advanced Ag-Economist LLM router: handles both 'price_only' 
+    and 'full_optimization' modes while executing dynamic agent rules.
+    """
     prompt = f"""शेतकऱ्याचा संदेश: "{original_text or 'मंडई भाव सांगा'}"
 
-━━━ JSON STRUCTURE ━━━
-mandis[]              → जवळच्या मंडींची यादी, best first
-qty_quintals          → शेतकऱ्याचे किती क्विंटल (profit calculate साठी)
-data_freshness_hours  → हा डेटा किती तासांपूर्वीचा आहे
-recommendation        → endpoint चा सल्ला (असल्यास)
+━━━ SYSTEM PERSONA & MISSION ━━━
+तुम्ही एक अत्यंत हुशार कृषी-अर्थतज्ञ (Ag-Economist) आहात. 
+तुमचे काम शेतकऱ्याला त्याच्या मालासाठी सर्वोत्तम बाजारपेठ शोधून देणे आणि 
+'agent_execution_rules' मध्ये दिलेल्या सूचनांचे काटेकोरपणे पालन करणे आहे.
 
-━━━ FIELD MEANINGS — mandis[] च्या आत ━━━
-mandi_name              → मंडीचे नाव
-district                → जिल्हा
-distance_km             → शेतकऱ्यापासून अंतर km
-modal_price_per_quintal → आजचा मुख्य भाव (रु/क्विंटल) — हा सर्वाधिक व्यवहार झालेला भाव
-min_price               → आजचा किमान भाव (रु/क्विंटल)
-max_price               → आजचा कमाल भाव (रु/क्विंटल)
-transport_cost_est      → एकूण वाहतूक खर्च (रु, round trip नाही — one way)
-apmc_commission_pct     → APMC कमिशन टक्केवारी (e.g. 1.5 = 1.5%)
-net_profit_per_quintal_est → endpoint ने दिलेला निव्वळ नफा (रु/क्विंटल)
-arrival_trend           → "rising"=वाढत आहे | "falling"=कमी होत आहे | "stable"=स्थिर
+━━━ JSON STRUCTURE (नवीन Schema) ━━━
+mode                     → "price_only" किंवा "full_optimization"
+qty_quintals             → शेतकऱ्याचा माल (क्विंटलमध्ये - profit calculation साठी)
+nearest_mandi            → Baseline (सर्वात जवळची मंडी)
+top_mandis[]             → सर्वाधिक फायदेशीर मंडींची यादी (Arbitrage)
+agent_execution_rules    → शेतकऱ्यासाठी महत्त्वाच्या सूचना (Checklist आणि Warnings)
 
-━━━ PROFIT CALCULATION (हे steps वापरा) ━━━
-Conservative total profit:
-  gross = min_price × qty_quintals
-  commission = gross × (apmc_commission_pct / 100)
-  net = gross - commission - transport_cost_est
+━━━ FIELD MEANINGS (Nested Data) ━━━
+market                                     → मंडीचे नाव
+exact_scraped_data.modal_price_per_quintal → आजचा मुख्य भाव (रु/क्विंटल)
+exact_scraped_data.min_price / max_price   → किमान आणि कमाल भाव (असल्यास)
+exact_scraped_data.variety                 → वाण (Variety)
+driving_distance.value_km                  → अंतर (km)
+transport_cost_est                         → वाहतूक खर्च (असल्यास)
+apmc_commission_pct                        → APMC कमिशन % (असल्यास)
+arrival_trend                              → rising=भाव वाढतोय, falling=कमी होतोय, stable=स्थिर
 
-Optimistic total profit:
-  gross = max_price × qty_quintals
-  commission = gross × (apmc_commission_pct / 100)
-  net = gross - commission - transport_cost_est
+━━━ PROFIT CALCULATION ENGINE (फक्त जर mode="full_optimization" असेल तरच वापरा) ━━━
+जर JSON मध्ये qty_quintals, min_price, max_price आणि transport_cost_est दिलेले असतील, तर हे गणित करा:
+- Conservative total profit: (min_price × qty_quintals) - (Gross × apmc_commission_pct/100) - transport_cost_est
+- Optimistic total profit: (max_price × qty_quintals) - (Gross × apmc_commission_pct/100) - transport_cost_est
+(जर हे आकडे JSON मध्ये नसतील, तर गणिताचा भाग पूर्णपणे सोडून द्या.)
 
-NET PROFIT PER QUINTAL (if net_profit_per_quintal_est given, use that directly —
-don't recalculate, just multiply by qty_quintals for total)
+━━━ HOW TO ANSWER (AGENT RULES) ━━━
+१. Presentation Rule: नेहमी आधी 'nearest_mandi' ची माहिती द्या (शेतकऱ्याचा विश्वास जिंकण्यासाठी). त्यानंतर 'top_mandis' मधील इतर जास्त फायद्याच्या मंड्या सांगा.
+२. जर mode="price_only" असेल: नफ्याचे कोणतेही आकडे किंवा वाहतूक खर्च स्वतःच्या मनाने लिहू नका. फक्त भाव आणि अंतर सांगा.
+३. जर mode="full_optimization" असेल: वरील Calculation Engine वापरून एकूण नफ्याची (Profit) Range सांगा.
+४. 'pre_dispatch_checklist_to_show_user' मधील मुद्दे बुलेट पॉईंट्स (-) मध्ये उत्तम मराठीत भाषांतरित करा.
+५. 'variety_warning_to_show_user' मधील टीप शेवटी ठळक अक्षरात द्या.
 
-━━━ HOW TO ANSWER ━━━
-१. सर्वोत्तम मंडी (सर्वाधिक net_profit_per_quintal_est) — नाव, जिल्हा, अंतर, भाव
-२. भाव range — min_price ते max_price
-३. वाहतूक + APMC — किती खर्च जातो
-४. एकूण नफा range — conservative ते optimistic (वरील formula वापरा)
-५. arrival_trend → भाव वाढत/कमी होत/स्थिर → आज विकायचे का थांबायचे
-६. पर्यायी मंडी असेल तर दुसऱ्या क्रमाची मंडी सांगा
-७. data_freshness_hours > 24 → ⚠️ डेटा जुना आहे, मंडीत जाण्यापूर्वी तपासा
+━━━ OUTPUT FORMAT (याच साच्यात उत्तर द्या) ━━━
+✅ *[crop] मंडी भाव विश्लेषण* 💰
 
-━━━ OUTPUT FORMAT ━━━
-✅ *[पीक] मंडी भाव विश्लेषण* 💰
+📍 *तुमची जवळची मंडी (Baseline): [nearest_mandi.market]*
+- अंतर: [driving_distance.value_km] km
+- आजचा मुख्य दर: ₹[modal_price_per_quintal] प्रति क्विंटल
+[जर min/max price असेल:] - दर range: ₹[min_price] ते ₹[max_price]
+- वाण/प्रकार: [variety]
 
-🏆 *सर्वोत्तम मंडी: [mandi_name], [district]*
-- अंतर: [distance_km] km
-- आजचा भाव: ₹[modal_price_per_quintal] प्रति क्विंटल
-- भाव range: ₹[min_price] ते ₹[max_price]
+🏆 *इतर फायदेशीर मंड्या (Arbitrage):*
+- *[top_mandis मधील market 1]:* ₹[modal_price_per_quintal] | अंतर: [value_km] km | वाण: [variety]
+- *[top_mandis मधील market 2]:* ₹[modal_price_per_quintal] | अंतर: [value_km] km | वाण: [variety]
+
+[जर mode="full_optimization" आणि qty_quintals असेल तरच खालील भाग दाखवा:]
+💰 *[qty_quintals] क्विंटलसाठी एकूण नफ्याचे गणित (अंदाजे):*
 - वाहतूक खर्च: ₹[transport_cost_est]
-- APMC कमिशन: [apmc_commission_pct]%
+- Conservative नफा: ₹[calculated conservative net] 
+- Optimistic नफा: ₹[calculated optimistic net] 
 
-💰 *[qty_quintals] क्विंटलसाठी एकूण नफा:*
-- Conservative: ₹[calculated conservative net] अंदाजे
-- Optimistic: ₹[calculated optimistic net] अंदाजे
+[जर arrival_trend असेल:]
+📈 *भाव कल:* [arrival_trend मराठीत - उदा. 'भाव वाढत आहेत, थोडा वेळ थांबणे फायदेशीर ठरू शकते.']
 
-📈 *भाव कल:* [arrival_trend मराठीत + आज विकावे का थांबावे ते सांगा]
+📝 *माल पाठवण्यापूर्वीची तयारी:*
+- [checklist item 1 - in Marathi]
+- [checklist item 2 - in Marathi]
+- [checklist item 3 - in Marathi]
 
-[दुसरी मंडी असेल तर:]
-📍 *पर्यायी मंडी: [name 2], [district]* — ₹[modal_price] | [distance_km] km
-
-[data_freshness_hours > 24:]
-⚠️ हा डेटा [data_freshness_hours] तासांपूर्वीचा आहे — जाण्यापूर्वी मंडीत भाव तपासा.
+💡 *महत्त्वाची टीप:* [variety_warning_to_show_user - in Marathi]
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-━━━ FINAL RULES ━━━
-- नेहमी range द्या (conservative ते optimistic) — एकच आकडा नको
-- Calculation मध्ये apmc_commission_pct ला percentage म्हणून treat करा (÷100)
-- JSON key नावे कधीही output मध्ये छापू नका"""
+━━━ CRITICAL ANTI-HALLUCINATION RULES ━━━
+- JSON मधील top_mandis मधीलच शहरे घ्या — स्वतःच्या मनाने (उदा. गडचिरोली, गोंदिया, रोहा) कोणतीही इतर शहरे जोडू नका.
+- JSON मध्ये min_price, max_price किंवा qty_quintals नसेल, तर नफ्याचे कोणतेही गणित स्वतःहून करू नका.
+- JSON key नावे (उदा. exact_scraped_data, driving_distance) कधीही output मध्ये छापू नका.
+- OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका, त्या जागी माहिती भरा."""
 
     return await _call_gemini(prompt)
-
 
 # ─── FERTILIZER formatter ─────────────────────────────────────────────────────
 
