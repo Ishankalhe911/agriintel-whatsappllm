@@ -722,6 +722,7 @@ async def orchestrate(
     # Fix 6+7: explicit ack per service, fertilizer gets NO location prompt
     # needs_location tells main.py whether to send the location request button
     if service_type == "mandi":
+        needs_horizon = False
         needs_location = True
         ack = {
             "mr": f"✅ *{crop.title() if crop else 'पीक'} मंडी भाव*\n\n📍 आता तुमचे स्थान शेअर करा.",
@@ -730,8 +731,9 @@ async def orchestrate(
         }
 
     elif service_type == "fertilizer":
-        # Fix 7: fertilizer needs NO location — go straight to payment
+        
         needs_location = False
+        needs_horizon = False
         pest_mentioned = extraction.get("pest") or extraction.get("symptom")
         ack = {
             "mr": (
@@ -751,10 +753,27 @@ async def orchestrate(
 
     else:  # weather
         needs_location = True
+        # Skip horizon ask if extraction already found harvest_date
+        needs_horizon = not bool(extraction.get("harvest_date"))
         ack = {
-            "mr": f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n📍 आता तुमचे स्थान शेअर करा.",
-            "hi": f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n📍 अब अपना स्थान शेयर करें।",
-            "en": f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n📍 Please share your location.",
+            "mr": (
+                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n"
+                f"तुम्हाला किती दिवसांचा अंदाज हवा आहे? खाली निवडा 👇"
+                if needs_horizon else
+                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n📍 आता तुमचे स्थान शेअर करा."
+            ),
+            "hi": (
+                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n"
+                f"कितने दिनों का अनुमान चाहिए? नीचे चुनें 👇"
+                if needs_horizon else
+                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n📍 अब अपना स्थान शेयर करें।"
+            ),
+            "en": (
+                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n"
+                f"How many days of forecast do you need? Choose below 👇"
+                if needs_horizon else
+                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n📍 Please share your location."
+            ),
         }
 
     return {
@@ -765,5 +784,6 @@ async def orchestrate(
         "detected_language": lang,
         "crop": crop,
         "qty": extraction.get("qty"),
-        "needs_location": needs_location,   # main.py uses this
+        "needs_location": needs_location,
+        "needs_horizon": needs_horizon,
     }

@@ -48,7 +48,7 @@ import json
 import logging
 import os
 from typing import Optional, Tuple
-
+from datetime import date, timedelta
 
 
 from contextlib import asynccontextmanager
@@ -71,6 +71,7 @@ from whatsapp import (
     is_duplicate_message,
     mark_as_read,
     parse_incoming_webhook,
+    send_buttons,
     send_location_request,
     send_payment_link,
     send_text,
@@ -292,15 +293,54 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
             return
 
     # ── Route by message type ─────────────────────────────────────────────
+    # ── Route by message type ─────────────────────────────────────────────
     if msg_type == "text":
-        # button_reply / list_reply also arrive with text-like content
         text = msg.get("text") or ""
         await _handle_text_message(phone, text, session, lang)
 
     elif msg_type in ("button_reply", "list_reply"):
-        # Treat interactive reply as a fresh text message
-        text = msg.get("reply_title") or msg.get("reply_id") or ""
+        reply_id    = msg.get("reply_id") or ""
+        reply_title = msg.get("reply_title") or ""
+
+        # ── Horizon button reply ──────────────────────────────────────────
+        if reply_id in ("horizon_15d", "horizon_1m", "horizon_2m") and session:
+            session_id = session.get("session_id", "")
+            
+            today = date.today()
+            horizon_map = {
+                "horizon_15d": timedelta(days=15),
+                "horizon_1m":  timedelta(days=30),
+                "horizon_2m":  timedelta(days=60),
+            }
+            harvest_date = (today + horizon_map[reply_id]).strftime("%Y-%m-%d")
+            success = store.update_session_data(
+                session_id,
+                harvest_date  = harvest_date,
+                horizon_asked = False,
+            )
+            logger.info(
+                f"[Main] Horizon resolved: {reply_id} → harvest_date={harvest_date} "
+                f"for session {session_id} (save={'ok' if success else 'FAILED'})"
+            )
+            dpdpa_consent = (
+                "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे.\n"
+                "आपले स्थान फक्त या विनंतीसाठी वापरले जाईल."
+                if lang == "mr" else
+                "📍 *Location*: We need your location for accurate results.\n"
+                "It will only be used for this request."
+            )
+            await send_text(phone, dpdpa_consent)
+            await send_location_request(
+                to        = phone,
+                body_text = _LOCATION_REQUEST_TEXT.get(lang, _LOCATION_REQUEST_TEXT["mr"]),
+            )
+            return
+
+        # ── All other button/list replies — treat as fresh text ──────────
+        text = reply_title or reply_id
         await _handle_text_message(phone, text, session, lang)
+
+    
 
     elif msg_type == "location":
         lat = msg.get("lat")
@@ -334,11 +374,17 @@ async def _geocode_text_location(text: str) -> Optional[Tuple[float, float]]:
 
     # ── Agri keyword guard — don't geocode a new crop/pest question ───────
     _AGRI_SIGNALS = {
-        "पीक", "शेत", "रोग", "कीड", "खत", "फवारणी", "बियाणे",
+        # Marathi
+        "पीक", "शेत", "रोग", "कीड", "खत", "फवारणी", "बियाणे", "पाऊस",
+        "हवामान", "मंडी", "भाव", "किंमत", "मावा", "करपा", "भुरी",
+        # English + transliterated
         "crop", "pest", "disease", "spray", "fertilizer", "weather",
-        "हवामान", "मंडी", "भाव", "किंमत", "price", "mandi",
+        "price", "mandi", "soybean", "cotton", "onion", "wheat", "maize",
+        "tomato", "potato", "blight", "aphid", "borer", "fungus",
+        "insecticide", "fungicide", "herbicide", "irrigation", "rain",
     }
     text_lower = text.lower().strip()
+    
     if any(sig.lower() in text_lower for sig in _AGRI_SIGNALS):
         return None
 
@@ -441,27 +487,62 @@ async def _handle_text_message(
         if current_status == "pending":
             session_id = session.get("session_id", "")
 
-            # Bug 1 fix: if session needs location but farmer typed a place name
-            # instead of tapping the button, try to geocode the text first.
-            # Only attempt this when no payment_link_id exists yet (location not
-            # yet resolved) and the session service_type needs location.
             needs_loc_service = session.get("service_type") in ("mandi", "weather")
             if needs_loc_service and not session.get("payment_link_id"):
-                coords = await _geocode_text_location(text)
-                if coords:
-                    lat, lon = coords
-                    success = store.update_location(session_id, lat=lat, lon=lon)
-                    if success:
+
+                # ── Horizon reply guard ───────────────────────────────────
+                if session.get("horizon_asked") and not session.get("harvest_date"):
+                    _AGRI_SIGNALS = {
+                        # Marathi
+                        "पीक", "शेत", "रोग", "कीड", "खत", "फवारणी", "बियाणे", "पाऊस",
+                        "हवामान", "मंडी", "भाव", "किंमत", "मावा", "करपा", "भुरी",
+                        # English + transliterated
+                        "crop", "pest", "disease", "spray", "fertilizer", "weather",
+                        "price", "mandi", "soybean", "cotton", "onion", "wheat", "maize",
+                        "tomato", "potato", "blight", "aphid", "borer", "fungus",
+                        "insecticide", "fungicide", "herbicide", "irrigation", "rain",
+                    }
+                    text_lower = text.lower().strip()
+                    if any(sig.lower() in text_lower for sig in _AGRI_SIGNALS):
+                        # New agri question — clear session, fall through to re-orchestrate
+                        store.clear_session(session_id)
+                        session = None
+                    else:
+                        # Not a new question — remind to tap horizon button
                         logger.info(
-                            f"[Main] Geocoded text location '{text}' → "
-                            f"lat={lat}, lon={lon} for session {session_id}"
+                            f"[Main] Horizon not yet answered for session {session_id}, reminding"
                         )
-                        await _send_payment(phone, session_id, lang)
+                        await send_buttons(
+                            to        = phone,
+                            body_text = (
+                                "कृपया खालीलपैकी एक निवडा 👇"
+                                if lang == "mr" else
+                                "Please choose one below 👇"
+                            ),
+                            buttons   = [
+                                ("horizon_15d", "१५ दिवस"),
+                                ("horizon_1m",  "१ महिना"),
+                                ("horizon_2m",  "२ महिने"),
+                            ],
+                        )
                         return
-                    # If save failed fall through to normal flow (send reminder)
+
+                # ── Geocode fallback (typed location, no horizon pending) ─
+                if session and not session.get("horizon_asked"):
+                    coords = await _geocode_text_location(text)
+                    if coords:
+                        lat, lon = coords
+                        success = store.update_location(session_id, lat=lat, lon=lon)
+                        if success:
+                            logger.info(
+                                f"[Main] Geocoded text location '{text}' → "
+                                f"lat={lat}, lon={lon} for session {session_id}"
+                            )
+                            await _send_payment(phone, session_id, lang)
+                            return
 
             # Check if they have a payment link id — if so, remind them
-            if session.get("payment_link_id"):
+            if session and session.get("payment_link_id"):
                 await send_text(phone, _AWAITING_PAYMENT_MSG.get(lang, _AWAITING_PAYMENT_MSG["mr"]))
                 return
 
@@ -532,25 +613,44 @@ async def _handle_text_message(
         return
 
     # ── Routed — decide next step based on needs_location ─────────────────
+    # ── Routed — decide next step based on needs_location ─────────────────
     if needs_location:
-        # weather or mandi — need location before payment
-        # Send DPDPA consent text first, then location button
-        dpdpa_consent = (
-            "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे.\n"
-            "आपले स्थान फक्त या विनंतीसाठी वापरले जाईल."
-            if detected_lang == "mr" else
-            "📍 *Location*: We need your location for accurate results.\n"
-            "It will only be used for this request."
-        )
-        await send_text(phone, dpdpa_consent)
-        await send_location_request(
-            to        = phone,
-            body_text = _LOCATION_REQUEST_TEXT.get(detected_lang, _LOCATION_REQUEST_TEXT["mr"]),
-        )
+        needs_horizon = result.get("needs_horizon", False)
+
+        if needs_horizon:
+            # Weather — ask horizon first, location comes after button reply
+            store.update_session_data(session_id, horizon_asked=True)
+            logger.info(f"[Main] Weather horizon ask sent for session {session_id}")
+            await send_buttons(
+                to        = phone,
+                body_text = {
+                    "mr": "तुम्हाला किती दिवसांचा हवामान अंदाज हवा आहे?",
+                    "hi": "कितने दिनों का मौसम अनुमान चाहिए?",
+                    "en": "How many days of weather forecast do you need?",
+                }.get(detected_lang, "तुम्हाला किती दिवसांचा हवामान अंदाज हवा आहे?"),
+                buttons   = [
+                    ("horizon_15d", "१५ दिवस"),
+                    ("horizon_1m",  "१ महिना"),
+                    ("horizon_2m",  "२ महिने"),
+                ],
+            )
+        else:
+            # Mandi or weather with harvest_date already known — go to location
+            dpdpa_consent = (
+                "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे.\n"
+                "आपले स्थान फक्त या विनंतीसाठी वापरले जाईल."
+                if detected_lang == "mr" else
+                "📍 *Location*: We need your location for accurate results.\n"
+                "It will only be used for this request."
+            )
+            await send_text(phone, dpdpa_consent)
+            await send_location_request(
+                to        = phone,
+                body_text = _LOCATION_REQUEST_TEXT.get(detected_lang, _LOCATION_REQUEST_TEXT["mr"]),
+            )
     else:
         # fertilizer — no location needed, go straight to payment
         await _send_payment(phone, session_id, detected_lang)
-
 
 # ─── Location message handler ─────────────────────────────────────────────────
 

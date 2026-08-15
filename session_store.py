@@ -9,7 +9,7 @@ import redis
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-DEFAULT_TTL_SECONDS = 900  # 15 minutes
+DEFAULT_TTL_SECONDS = 1800  # 15 minutes
 
 
 def normalize_phone(phone: str) -> str:

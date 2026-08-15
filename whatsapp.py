@@ -326,7 +326,14 @@ async def send_buttons(
         "type": "interactive",
         "interactive": interactive,
     }
-    return await _post(payload)
+    result = await _post(payload)
+    if result.get("error"):
+        logger.error(
+            f"[WhatsApp] send_buttons failed for {to[-4:]}: {result.get('error_reason')}"
+        )
+    else:
+        logger.info(f"[WhatsApp] Buttons sent to {to[-4:]}")
+    return result
 
 
 # ─── 5d. CTA-URL button — for Razorpay payment links ────────────────────────
