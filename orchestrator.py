@@ -23,6 +23,10 @@ Fixes applied:
   ✅ Fix 10: response_mime_type stages 1+2, omitted stage 3 (function calling)
   ✅ Fix 11: client.aio.models.generate_content (native async, no threads)
   ✅ Fix 12: Random key rotation across all 5 Gemini keys
+  ✅ Fix 13 (NEW): Fertilizer route now confirms crop+pest BEFORE payment.
+     If pest/symptom missing, farmer is asked to either type the pest OR
+     explicitly say "no" to get PGR/growth-booster advice instead. No more
+     silent PGR fallback, no more lost pest data across messages.
 """
 
 import json
@@ -562,6 +566,36 @@ CLARIFICATION_MESSAGES = {
         "hi": "कौन सा कीट या रोग है?\n\nउदाहरण: माहू, तना छेदक, झुलसा\nया लक्षण बताएं: 'पत्ते पीले हो रहे हैं'",
         "en": "Which pest or disease?\n\nExample: aphid, stem borer, blight, powdery mildew\nOr describe symptoms: 'leaves turning yellow'",
     },
+    # ── NEW (Fix 13): shown BEFORE payment when crop is known but pest/symptom is not.
+    # Farmer either types the actual pest, or explicitly says "no"/"nahi" to
+    # get PGR/growth-booster advice instead. Prevents the silent PGR
+    # fallback that used to happen when pest was simply missing.
+    "pest_confirm": {
+        "mr": (
+            "✅ *पीक: {crop}*\n\n"
+            "तुम्ही कीड/रोग सांगितला नाही.\n"
+            "🐛 कीड/रोगाचे नाव टाइप करा (उदा: मावा, खोडकिडा, करपा)\n"
+            "किंवा 'नाही' लिहा — growth booster सल्ला मिळेल."
+        ),
+        "hi": (
+            "✅ *फसल: {crop}*\n\n"
+            "आपने कीट/रोग नहीं बताया।\n"
+            "🐛 कीट/रोग का नाम टाइप करें (जैसे: माहू, तना छेदक)\n"
+            "या 'नहीं' लिखें — ग्रोथ बूस्टर सलाह मिलेगी।"
+        ),
+        "en": (
+            "✅ *Crop: {crop}*\n\n"
+            "You haven't mentioned a pest/disease.\n"
+            "🐛 Type the pest/disease name (e.g. aphid, stem borer)\n"
+            "or reply 'no' — you'll get growth booster suggestions instead."
+        ),
+    },
+}
+
+# ── NEW (Fix 13): keywords that mean "no pest, give me PGR/growth booster instead"
+SKIP_PEST_KEYWORDS = {
+    "nahi", "nahin", "no", "skip", "nako", "nakoy",
+    "नाही", "नको", "नहीं", "growth", "booster", "pgr", "vitamin", "vaadh"
 }
 
 NOT_HANDLED_MESSAGES = {
@@ -601,6 +635,69 @@ async def orchestrate(
         }                               whether to send location request button
     """
     logger.info(f"[Orchestrator] Processing: '{message[:60]}'")
+
+    # ── NEW (Fix 13): if we're waiting on a pest confirmation from a
+    # previous turn, handle that reply here BEFORE running the normal
+    # preflight/extraction/routing pipeline on it. Otherwise a short reply
+    # like "nahi" or a bare pest name would get misclassified from scratch.
+    prior = session_store.get_session(session_id) or {}
+
+    if prior.get("awaiting") == "pest_confirmation":
+        crop = prior.get("crop", "") or ""
+        lang = prior.get("language", "mr")
+        msg_clean = message.strip().lower()
+
+        is_skip = any(kw in msg_clean for kw in SKIP_PEST_KEYWORDS)
+
+        if is_skip:
+            # Explicit "no pest" confirmation → route to PGR, openly
+            session_store.update_session_data(
+                session_id,
+                service_type="fertilizer",
+                crop=crop,
+                pest=None,
+                symptom=None,
+                category_intent="PGR",
+                language=lang,
+                awaiting=None,
+            )
+            ack = {
+                "mr": f"✅ *{crop.title() if crop else 'पीक'} ग्रोथ बूस्टर सल्ला*\n\n💳 पेमेंट करा आणि सल्ला मिळवा.",
+                "hi": f"✅ *{crop.title() if crop else 'फसल'} ग्रोथ बूस्टर सलाह*\n\n💳 पेमेंट करें और सलाह पाएं।",
+                "en": f"✅ *{crop.title() if crop else 'Crop'} Growth Booster Advice*\n\n💳 Pay to get recommendations.",
+            }
+            return {
+                "status": "routed", "service_type": "fertilizer",
+                "reply_message": ack.get(lang, ack["mr"]),
+                "session_updated": True, "detected_language": lang,
+                "crop": crop, "qty": None,
+                "needs_location": False, "needs_horizon": False,
+            }
+        else:
+            # Treat their reply as the pest/symptom itself (raw text —
+            # fertilizermodule's Layer 2 Gemini mapper will resolve it)
+            session_store.update_session_data(
+                session_id,
+                service_type="fertilizer",
+                crop=crop,
+                pest=None,
+                symptom=message.strip(),
+                category_intent=None,
+                language=lang,
+                awaiting=None,
+            )
+            ack = {
+                "mr": f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*\n\n🐛 {message.strip()}\n\n💳 पेमेंट करा आणि CIBRC-approved सल्ला मिळवा.",
+                "hi": f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*\n\n🐛 {message.strip()}\n\n💳 पेमेंट करें और सलाह पाएं।",
+                "en": f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*\n\n🐛 {message.strip()}\n\n💳 Pay to get recommendations.",
+            }
+            return {
+                "status": "routed", "service_type": "fertilizer",
+                "reply_message": ack.get(lang, ack["mr"]),
+                "session_updated": True, "detected_language": lang,
+                "crop": crop, "qty": None,
+                "needs_location": False, "needs_horizon": False,
+            }
 
     # ── Stage 1: Preflight ──────────────────────────────────────────────────
     preflight = await _preflight(message)
@@ -659,17 +756,38 @@ async def orchestrate(
         f"lang={lang}, intent={extraction.get('raw_intent')}"
     )
 
+    # ── NEW (Fix 13): merge in whatever the prior turn already knew, so a
+    # crop given two messages ago (or a pest given last message) isn't lost
+    # just because this message doesn't repeat it.
+    if not extraction.get("crop") and prior.get("crop"):
+        extraction["crop"] = prior.get("crop")
+    if not extraction.get("pest") and prior.get("pest"):
+        extraction["pest"] = prior.get("pest")
+    if not extraction.get("symptom") and prior.get("symptom"):
+        extraction["symptom"] = prior.get("symptom")
+
     if extraction.get("needs_clarification"):
         aspect = extraction.get("clarification_aspect", "service")
         clarification_msgs = CLARIFICATION_MESSAGES.get(
             aspect, CLARIFICATION_MESSAGES["service"]
         )
         reply = clarification_msgs.get(lang, clarification_msgs["mr"])
+        # ── NEW (Fix 13): save whatever we DID extract instead of
+        # discarding it — otherwise a pest mentioned alongside a missing
+        # crop was lost the moment we asked for clarification.
+        session_store.update_session_data(
+            session_id,
+            crop=extraction.get("crop"),
+            pest=extraction.get("pest"),
+            symptom=extraction.get("symptom"),
+            category_intent=extraction.get("category_intent"),
+            language=lang,
+        )
         return {
             "status": "needs_clarification",
             "service_type": None,
             "reply_message": reply,
-            "session_updated": False,
+            "session_updated": True,
             "detected_language": lang,
             "crop": None, "qty": None,
             "needs_location": False,
@@ -697,6 +815,41 @@ async def orchestrate(
             "needs_location": False,
         }
 
+    crop = extraction.get("crop", "") or ""
+
+    # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
+    # If neither pest, symptom, nor an explicit chemical category was given,
+    # do NOT silently fall through to PGR. Ask the farmer directly: type the
+    # pest, or say "no" to confirm they really do want growth-booster advice.
+    if service_type == "fertilizer":
+        pest_mentioned = (
+            extraction.get("pest")
+            or extraction.get("symptom")
+            or extraction.get("category_intent")
+        )
+
+        if not pest_mentioned:
+            session_store.update_session_data(
+                session_id,
+                service_type="fertilizer",
+                crop=crop,
+                language=lang,
+                awaiting="pest_confirmation",
+            )
+            msg_template = CLARIFICATION_MESSAGES["pest_confirm"].get(
+                lang, CLARIFICATION_MESSAGES["pest_confirm"]["mr"]
+            )
+            reply_msg = msg_template.format(crop=crop.title() if crop else "पीक")
+            return {
+                "status": "needs_clarification",
+                "service_type": "fertilizer",
+                "reply_message": reply_msg,
+                "session_updated": True,
+                "detected_language": lang,
+                "crop": crop, "qty": None,
+                "needs_location": False,
+            }
+
     # ── Save to session ─────────────────────────────────────────────────────
     # Fix 5: pest/symptom/category_intent now saved to session
     session_store.update_session_data(
@@ -717,8 +870,6 @@ async def orchestrate(
         raw_intent=extraction.get("raw_intent", ""),
     )
 
-    crop = extraction.get("crop", "") or ""
-
     # Fix 6+7: explicit ack per service, fertilizer gets NO location prompt
     # needs_location tells main.py whether to send the location request button
     if service_type == "mandi":
@@ -731,14 +882,14 @@ async def orchestrate(
         }
 
     elif service_type == "fertilizer":
-        
+        # By this point pest_mentioned is guaranteed truthy (handled above)
         needs_location = False
         needs_horizon = False
         pest_mentioned = extraction.get("pest") or extraction.get("symptom")
         ack = {
             "mr": (
                 f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*\n\n"
-                f"{'🐛 ' + str(pest_mentioned) + '\n\n' if pest_mentioned else ''}"
+                f"{'🐛 ' + str(pest_mentioned) + chr(10) + chr(10) if pest_mentioned else ''}"
                 "💳 पेमेंट करा आणि CIBRC-approved रासायनिक सल्ला मिळवा."
             ),
             "hi": (

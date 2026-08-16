@@ -549,192 +549,147 @@ async def format_fertilizer_response(
 
 ━━━ ⚠️ SAFETY PRIORITY — हे सर्वात आधी वाचा ━━━
 हा सल्ला रासायनिक औषधांबद्दल आहे. चुकीचा डोस → पीक नुकसान किंवा मानवी विषबाधा.
-चुकीचे PHI → अन्नात कीडनाशक अवशेष → FSSAI उल्लंघन.
+चुकीचे waiting period → अन्नात कीडनाशक अवशेष → FSSAI उल्लंघन.
 JSON मध्ये नसलेले कोणतेही डोस, brand names, किंवा रासायनिक नावे स्वतःहून कधीही लिहू नका.
 
-━━━ JSON STRUCTURE (top-level keys) ━━━
-crop                    → कोणत्या पिकासाठी सल्ला (output header साठी वापरा)
-query_type              → "pest" | "disease" | "weed" | "fertilizer" (header ठरवतो — खाली पहा)
-pest_identified         → आढळलेली कीड (query_type="pest" असल्यास)
-disease_identified      → आढळलेला रोग (query_type="disease" असल्यास)
-recommendations[]       → शिफारशींची यादी (एक किंवा अधिक — सर्व present करा)
-warning                 → महत्त्वाची सावधानता (असल्यास — प्राधान्याने सांगा)
-ipm_note                → Integrated Pest Management सल्ला (असल्यास — bio आधी, chemical नंतर)
-tank_mix_warning        → एकापेक्षा जास्त chemicals असल्यास mix करण्याबद्दल इशारा
-resistance_note         → या घटकाचा जास्त वापर → resistance धोका (असल्यास सांगा)
-state_restriction       → महाराष्ट्रात बंदी असलेले घटक (असल्यास ⚠️ सांगा)
-fallback_reason         → layer 3/4 वापरण्याचे कारण (e.g. "crop not in CIBRC database")
-source_doc              → माहितीचा स्रोत — असल्यास "स्रोत: [source_doc]" सांगा
-layer_used (top-level)  → संपूर्ण response कोणत्या layer मधून आला
+━━━ JSON STRUCTURE (top-level keys — actual endpoint schema) ━━━
+status                              → "success"
+resolved_parameters.crop            → normalized crop key
+resolved_parameters.crop_display    → शेतकऱ्याने लिहिलेले मूळ पिकाचे नाव — output header साठी वापरा
+resolved_parameters.targets_resolved → कोणत्या कीड/रोगांसाठी शोध घेतला (list)
+resolved_parameters.mapped_from_symptom → true असेल तर लक्षणावरून कीड ओळखली गेली
+resolved_parameters.is_pgr_query    → true असेल तर हे ग्रोथ बूस्टर उत्तर आहे
+recommendations                     → हे एक OBJECT आहे, LIST नाही! खालील keys असू शकतात:
+  .overlap_best_matches[]           → एकापेक्षा जास्त कीड/रोग असतील — सर्वांवर चालणारी औषधे
+  .insecticide[]                    → कीटकनाशके
+  .bio_pesticide[]                  → जैविक/सेंद्रिय उपाय
+  .fungicide[]                      → बुरशीनाशके
+  .herbicide[]                      → तणनाशके
+  .pgr[]                            → वाढ नियंत्रक (is_pgr_query=true असताना)
+  (JSON मध्ये जी key PRESENT आहे तीच सांगा — रिकामी key पूर्णपणे skip करा)
+summary.total_options               → एकूण किती पर्याय सापडले
+summary.has_bio_options             → जैविक पर्याय उपलब्ध आहे का
+summary.has_branded_options         → बाजारातील ब्रँड नावे उपलब्ध आहेत का
 
-━━━ FIELD MEANINGS — recommendations[] च्या आत ━━━
-active_ingredient        → रासायनिक घटकाचे शास्त्रीय नाव (हेच खरे नाव — बाटलीवर तपासा)
+━━━ FIELD MEANINGS — प्रत्येक recommendation entry च्या आत ━━━
+chemical_name            → रासायनिक घटकाचे शास्त्रीय/CIBRC नाव (हेच खरे नाव — बाटलीवर तपासा)
 category                 → insecticide=कीडनाशक | fungicide=बुरशीनाशक |
-                           herbicide=तणनाशक | bio-pesticide=जैविक | PGR=वाढ नियंत्रक
-formulation_type         → WP=भुकटी (g मध्ये मोजा) | EC=द्रावण (ml मध्ये मोजा) |
-                           SC=निलंबन (ml) | WG=दाणेदार भुकटी (g) | GR=दाणे (g/soil)
-                           ⚠️ dose unit हा field ठरवतो — JSON मध्ये असेल तर अवश्य सांगा
-brand_names[]            → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
-registration_number      → CIBRC नोंदणी क्रमांक (CIR/####) — असल्यास: "kiran.nic.in वर verify करा"
-dose_per_ha              → प्रति हेक्टर डोस — JSON मधील exact value + unit वापरा
-dose_per_15L             → १५ लिटर पंपासाठी डोस — JSON मधील exact value + unit वापरा
-application_method       → "foliar_spray"=पानांवर फवारा | "soil_drench"=मातीत ओता |
-                           "seed_treatment"=बियाण्यावर | "granule_broadcast"=मातीत दाणे
-max_applications_per_season → हंगामात जास्तीत जास्त किती वेळा वापरावे — CIBRC मर्यादा
-waiting_period_days      → PHI — काढणीपूर्वी किती दिवस थांबायचे (अन्न सुरक्षिततेसाठी)
-                           ⚠️ हा आकडा चुकला तर अन्नात रसायन राहते — नेहमी सांगा
-moa_group                → IRAC/FRAC Resistance गट (असल्यास) — खाली "RESISTANCE LOGIC" पहा
-applicable_crops[]       → हे औषध कोणत्या पिकांसाठी CIBRC-approved — खाली "OFF-LABEL" पहा
-tank_mix_compatibility   → "compatible with [X]" | "do not mix with [Y]" (असल्यास)
-confidence               → high=खात्रीशीर | medium=साधारण | low=अंदाजे
-layer_used (nested)      → माहिती स्रोत (खाली "LAYER MEANING" पहा)
+                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक
+is_combination_product   → true असेल तर हे दोन घटकांचे मिश्रण आहे — तसे नमूद करा
+covers_all_pests         → true असेल तर सर्व कीड/रोगांवर हे एकच औषध चालते
+pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे
+dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
+dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
+dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
+dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
+dosage.application_method → फवारणी/मातीत/बियाण्यावर — कशा प्रकारे वापरायचे
+brands[]                 → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
+companies[]              → या ब्रँड्स बनवणाऱ्या कंपन्या
+has_brand_info           → false असेल तर brands/companies section पूर्णपणे skip करा
+diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त bio_pesticide साठी) — प्रत्येकात name, ingredients, method
 
-━━━ LAYER MEANING — विश्वासार्हता scale ━━━
-layer 1 → CIBRC SQLite DB — ✅ सरकारी नोंदणीकृत (सर्वात विश्वासार्ह)
-layer 2 → महाराष्ट्र कृषी विद्यापीठ (MPKV/PDKV/VNMKV/DBSKKV) — ✅ विद्यापीठ शिफारस
-layer 3 → Google Search + AI विश्लेषण — ⚠️ शोध-आधारित (खात्री करा)
-layer 4 → AI अंदाज — ⚠️ अंदाजे माहिती — कृषी सेवा केंद्रात confirm करा
+━━━ DOSAGE RULE (safety-critical) ━━━
+dosage.formulation_dose असेल → तेच exact value वापरा (आधी दाखवा — सर्वात प्रॅक्टिकल)
+dosage.ai_dose सुद्धा असेल → "(AI dose: [value])" असे कंसात नंतर दाखवा
+dosage.water_dilution असेल → "[X] लिटर पाण्यात मिसळा"
+dosage.waiting_period असेल → "काढणीपूर्वी [N] थांबा" — नेहमी सांगा
+dosage.application_method असेल → वापर पद्धत ओळ द्या
+सर्व dosage values null/रिकामे असतील → "डोससाठी कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
 
-━━━ DOSAGE RULE (अत्यंत महत्त्वाचे — safety-critical) ━━━
-dose_per_ha JSON मध्ये असेल  → "प्रति हेक्टर [dose] [unit]" — exact value वापरा
-dose_per_15L JSON मध्ये असेल → "१५ लिटर पंपासाठी [dose] [unit]" — exact value वापरा
-दोन्ही नसतील               → "डोससाठी कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
-⚠️ formulation_type WP/WG असेल → "g" unit | EC/SC असेल → "ml" unit — JSON च्या unit लाच follow करा
+━━━ BRANDS RULE ━━━
+has_brand_info = false → brands आणि companies section पूर्णपणे skip करा
+has_brand_info = true → brands[] मधून जास्तीत जास्त ३ नावे + companies[] मधून जास्तीत जास्त २ नावे
+brands[] रिकामे पण companies[] असतील → फक्त companies दाखवा
 
-━━━ OFF-LABEL RULE (safety-critical) ━━━
-applicable_crops[] JSON मध्ये असेल आणि farmer च्या [crop] त्यात नसेल →
-⚠️ "हे औषध [applicable_crops] साठी CIBRC-approved आहे, [farmer's crop] साठी नाही.
-    off-label वापरापूर्वी कृषी अधिकाऱ्याचा सल्ला घ्या."
-
-━━━ RESISTANCE ROTATION LOGIC ━━━
-moa_group JSON मध्ये असेल →
-"⚠️ Resistance व्यवस्थापन: हे [IRAC/FRAC Group X] गटाचे औषध आहे.
- हंगामात एकाच गटाचे औषध वारंवार वापरू नका — resistance टाळण्यासाठी
- दुसऱ्या गटाच्या औषधाशी rotate करा."
-
-━━━ query_type नुसार OUTPUT HEADER ━━━
-"pest"       → ✅ *[crop] कीड व्यवस्थापन सल्ला* 🐛
-"disease"    → ✅ *[crop] रोग व्यवस्थापन सल्ला* 🍃
-"weed"       → ✅ *[crop] तण व्यवस्थापन सल्ला* 🌿
-"fertilizer" → ✅ *[crop] खत सल्ला* 🌱
-(field नसल्यास default) → ✅ *[crop] पीक संरक्षण सल्ला* 🧪
+━━━ HEADER LOGIC (resolved_parameters वरून ठरवा) ━━━
+is_pgr_query = true                     → ✅ *[crop_display] ग्रोथ बूस्टर सल्ला* 🌱
+mapped_from_symptom = true              → ✅ *[crop_display] लक्षणावरून ओळखलेली समस्या* 🔍
+recommendations मध्ये फक्त fungicide[]  → ✅ *[crop_display] रोग व्यवस्थापन सल्ला* 🍃
+recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display] तण व्यवस्थापन सल्ला* 🌿
+इतर सर्व (कीड/मिश्र)                   → ✅ *[crop_display] पीक संरक्षण सल्ला* 🧪
 
 ━━━ HOW TO ANSWER ━━━
 
-नियम १ — warnings प्रथम:
-  state_restriction असेल → ⚠️ RESPONSE सुरुवातीलाच — "हे औषध महाराष्ट्रात बंदी आहे"
-  warning असेल → RESPONSE मध्ये प्राधान्याने, सुरुवातीला किंवा संबंधित recommendation नंतर
+नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल:
+  हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
+  नंतर बाकी categories त्यांच्या स्वतःच्या headers खाली दाखवा.
+  overlap मध्ये आधीच दाखवलेले chemical_name पुन्हा खालच्या यादीत छापू नका.
 
-नियम २ — IPM hierarchy (ipm_note असल्यास):
-  recommendations[] sort करताना: bio-pesticide आधी, chemical नंतर
-  ipm_note असेल → "पहिला पर्याय म्हणून जैविक उपाय वापरा" असे सांगा
+नियम २ — IPM hierarchy:
+  summary.has_bio_options = true असेल → bio_pesticide section आधी दाखवा.
+  "🌿 जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय" असा सल्ला द्या.
 
-नियम ३ — Multiple recommendations (recommendations[] मध्ये 2+ items असल्यास):
-  प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या
-  Gemini ने स्वतः निर्णय घेऊ नये की कोणता "best" आहे — सर्व options farmer ला द्या
-  फक्त layer 1 + bio-pesticide असल्यास तो आधी ठेवा
+नियम ३ — Multiple recommendations (कोणत्याही category मध्ये 2+ items):
+  प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या.
+  स्वतः "हा best आहे" असे कधीही म्हणू नका — सर्व options शेतकऱ्याला द्या.
 
-नियम ४ — Tank mix:
-  tank_mix_warning JSON मध्ये असेल → ते सांगा
-  JSON मध्ये नसेल → स्वतःहून "हे एकत्र मिसळता येते / मिसळू नका" कधीही लिहू नका
+नियम ४ — diy_homemade_options[] असेल (bio_pesticide entries मध्ये):
+  त्या recommendation च्या खाली "🏡 घरगुती पर्याय:" असे sub-section द्या.
+  name, ingredients/साहित्य, method/कृती थोडक्यात सांगा.
 
-नियम ५ — Confidence आणि layer नुसार disclaimer:
-  layer 1 → disclaimer नाही
-  layer 2 → "(महाराष्ट्र कृषी विद्यापीठ शिफारस)"
-  layer 3 → ⚠️ "ही शोध-आधारित माहिती आहे — कृषी सेवा केंद्रात confirm करा"
-  layer 4 → ⚠️ "ही माहिती AI अंदाजे आहे — कृपया कृषी विभागाकडून खात्री करा"
-  confidence=low → layer 4 प्रमाणेच disclaimer द्या
+नियम ५ — is_combination_product = true:
+  "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
 
-नियम ६ — fallback_reason असेल:
-  "तुमच्या [crop] साठी CIBRC डेटाबेसमध्ये नोंद आढळली नाही ([fallback_reason])
-  खालील माहिती [layer X] वरून दिली आहे — खात्री करा."
+नियम ६ — targets_resolved यादी:
+  🐛 *आढळलेली समस्या:* [targets_resolved स्वल्पविरामाने] असे सांगा.
 
-नियम ७ — resistance_note असेल:
-  RESISTANCE ROTATION LOGIC (वर दिलेले) वापरून farmer ला सांगा
+नियम ७ — mapped_from_symptom = true:
+  🔍 "(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)" असे सांगा.
 
-नियम ८ — max_applications_per_season असेल:
-  "हे औषध हंगामात जास्तीत जास्त [N] वेळाच वापरा (CIBRC मर्यादा)"
+━━━ OUTPUT FORMAT ━━━
 
-━━━ OUTPUT FORMAT (याच साच्यात — सर्व applicable sections द्या) ━━━
+[HEADER LOGIC नुसार:]
+✅ *[crop_display] [योग्य title]* [emoji]
 
-[state_restriction असल्यास सुरुवातीला:]
-🚫 *⚠️ महाराष्ट्रात बंदी:* [state_restriction मराठीत]
+🐛 *आढळलेली समस्या:* [targets_resolved — स्वल्पविरामाने]
 
-[query_type नुसार header:]
-✅ *[crop] [query_type नुसार title]* [emoji]
+[mapped_from_symptom = true असेल:]
+🔍 *(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)*
 
-🐛 *आढळलेली समस्या:* [pest_identified / disease_identified — असेल तेच लिहा]
+[summary.has_bio_options = true असेल:]
+🌿 *IPM सल्ला:* जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय.
 
-[ipm_note असल्यास:]
-🌿 *IPM सल्ला:* [ipm_note मराठीत] — रासायनिक उपायापूर्वी हे वापरून पहा.
+[overlap_best_matches[] रिकामे नसेल:]
+🎯 *सर्व समस्यांसाठी उपयुक्त:*
+[प्रत्येक overlap entry साठी recommendation block — खाली पहा]
 
-[प्रत्येक recommendation साठी — सर्व present करा:]
+[प्रत्येक category साठी (जे present आहे — bio_pesticide आधी, नंतर insecticide/fungicide/herbicide/pgr):]
 🧪 *[पर्याय १ / पर्याय २ ...] — [category मराठीत]:*
-- *घटक:* [active_ingredient][formulation_type असल्यास: ([formulation_type])]
-- *बाजारातील नावे:* [brand_names[] मधीलच 2-3 — यापेक्षा जास्त नाही]
-[registration_number असल्यास:] - *CIBRC क्र.:* [registration_number] *(kiran.nic.in वर verify करा)*
-[application_method असल्यास:] - *वापर पद्धत:* [application_method मराठीत]
-- *डोस:* [DOSAGE RULE नुसार — dose_per_ha | dose_per_15L | "कृषी केंद्रात विचारा"]
-- *काढणीपूर्वी थांबा (PHI):* [waiting_period_days] दिवस
-[max_applications_per_season असल्यास:] - *हंगामात जास्तीत जास्त:* [N] वेळा (CIBRC)
-[tank_mix_compatibility असल्यास:] - *Mix सल्ला:* [tank_mix_compatibility मराठीत]
-[applicable_crops[] असल्यास + OFF-LABEL असल्यास: ⚠️ off-label warning]
-[layer/confidence नुसार disclaimer — नियम ५ प्रमाणे]
+- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - *वापर पद्धत:* [मराठीत]
+- *डोस:* [DOSAGE RULE नुसार — formulation_dose आधी, ai_dose कंसात]
+[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
+[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value]
+[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — स्वल्पविरामाने]
+[diy_homemade_options[] — bio_pesticide साठी:]
+  🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
 
-[resistance_note असल्यास:]
-🔄 *Resistance व्यवस्थापन:* [RESISTANCE ROTATION LOGIC नुसार मराठीत]
-
-[tank_mix_warning असल्यास:]
-⚠️ *Mix सावधानता:* [tank_mix_warning मराठीत]
-
-[warning असल्यास:]
-⚠️ *सावधानता:* [warning मराठीत]
-
-[fallback_reason असल्यास:]
-ℹ️ *माहितीचा स्तर:* [fallback_reason + layer नुसार नियम ६ मराठीत]
-
-[source_doc असल्यास:]
-📚 *स्रोत:* [source_doc]
-
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल, PHI, आणि PPE
+⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE
 (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा. लेबलवरील सूचना कायद्याने बंधनकारक आहेत.
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
-━━━ CRITICAL ANTI-HALLUCINATION RULES (सुरक्षा-संवेदनशील — एकही तोडू नका) ━━━
-DOSE (सर्वात महत्त्वाचे):
-- dose JSON मध्ये नसेल तर कधीही स्वतःहून सांगू नका — शेतकऱ्याला "कृषी केंद्रात विचारा" सांगा
-- dose_per_ha आणि dose_per_15L फक्त JSON मधील exact numbers वापरा — round किंवा adjust करू नका
-- formulation_type नसेल तर g/ml unit JSON मधीलच वापरा — स्वतःहून unit ठरवू नका
+━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
+DOSE:
+- dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
+- dosage.formulation_dose / dosage.ai_dose फक्त JSON मधील exact values — round करू नका
 
-BRAND NAMES:
-- brand_names[] JSON मधील यादीतीलच नावे सांगा — एकही नवे नाव स्वतःहून जोडू नका
-- ब्रँड नावांची संख्या JSON मधील list पेक्षा जास्त असणार नाही
-
-CHEMICAL MIXING:
-- tank_mix_compatibility JSON मध्ये नसेल → "हे एकत्र मिसळा / मिसळू नका" कधीही लिहू नका
-- एकापेक्षा जास्त recommendations असल्यास आपोआप "एकत्र वापरा" सुचवू नका
-
-CROP REGISTRATION:
-- applicable_crops[] JSON मध्ये असेल → farmer च्या crop शी compare करा, off-label असल्यास सांगा
-- applicable_crops[] नसेल → off-label warning देऊ नका, off-label clearance पण देऊ नका
-
-CIBRC NUMBERS:
-- registration_number JSON मध्ये नसेल → CIR/#### सारखा कोणताही क्रमांक लिहू नका
-- moa_group JSON मध्ये नसेल → IRAC/FRAC group number स्वतःहून सांगू नका
-
-SOURCE + LAYER:
-- source_doc JSON मध्ये नसेल → कोणताही PDF/website नाव लिहू नका
-- layer 3/4 असल्यास disclaimer अनिवार्य — तो कधीही skip करू नका
+BRANDS:
+- has_brand_info = false → brands/companies section पूर्णपणे skip करा
+- brands[] JSON मधील यादीतीलच — नवे नाव कधीही जोडू नका
+- companies[] JSON मधील यादीतीलच — max २ दाखवा
 
 STRUCTURE:
-- JSON key नावे (recommendations, active_ingredient, layer_used इ.) output मध्ये छापू नका
+- recommendations OBJECT आहे — overlap_best_matches, insecticide, bio_pesticide इत्यादी sub-keys आहेत
+- JSON मध्ये नसलेली कोणतीही category output मध्ये दाखवू नका
+- JSON key नावे (recommendations, dosage, chemical_name इ.) output मध्ये छापू नका
 - OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका — त्या जागी actual data भरा
+- overlap मध्ये दाखवलेले chemical पुन्हा category section मध्ये छापू नका
 - JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
 
     return await _call_gemini(prompt)
-
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
