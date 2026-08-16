@@ -204,19 +204,21 @@ Supported crops (normalize to English name):
 {SUPPORTED_CROPS}
 
 Rules:
-1. crop: English lowercase only. सोयाबीन/soya/soyabean→soybean. कापूस/kapus→cotton. कांदा→onion
+1. crop: English lowercase only. 
+   - ⚠️ CRITICAL: Generic words like "pik", "पीक", "sheti", "शेती", "crop", or "fasal" are NOT crop names. If no specific crop (e.g. soybean, rice, cotton) is named, set crop=null.
 2. qty: number only as string. "100 quintal"→qty="100", qty_unit="quintal"
 3. variety: Keep in ORIGINAL SCRIPT. शरबती→variety="शरबती". lokwan→variety="lokwan"
 4. time_horizon: "now" unless farmer says pudhe/future/N days → "30_days" format
 5. language: "mr" for Marathi/Marathi-in-English-script, "hi" for Hindi, "en" for English
-6. needs_clarification: true ONLY if crop completely missing AND cannot be inferred
-7. Weather queries can have null crop — weather works without crop
-8. pest: extract pest/disease names as a list. मावा→["aphid"], stem borer→["stem_borer"],
-         करपा→["blight"], भुरी→["powdery_mildew"]. Multiple pests → list all.
-9. symptom: if exact pest unknown but farmer describes visible symptoms, capture verbatim.
-            "पाने पिवळी पडत आहेत" → symptom="leaves turning yellow"
-10. category_intent: if farmer asks for a specific chemical category.
-            "बुरशीनाशक सांगा"→"fungicide", "तणनाशक"→"herbicide", "खत"→"fertilizer"
+6. pest: extract pest/disease names as a list. मावा→["aphid"], stem borer→["stem_borer"], करपा→["blight"], भुरी→["powdery_mildew"]. Multiple pests → list all.
+7. symptom: 
+   - ⚠️ CRITICAL: Must be a specific PHYSICAL/VISUAL symptom (e.g. "leaves turning yellow", "holes in leaves", "white spots"). 
+   - Generic complaint words like "kharab zhala", "खराब झाले", "rog aala", "रोग आला", "nuksan", "problem aahe" are NOT symptoms. Set symptom=null for generic complaints.
+8. category_intent: if farmer asks for a specific chemical category. "बुरशीनाशक सांगा"→"fungicide", "तणनाशक"→"herbicide", "खत"→"fertilizer", "growth booster"→"PGR"
+9. needs_clarification:
+   - If user asks about Mandi prices or Crop Disease/Protection, but crop=null → needs_clarification=true, clarification_aspect="crop"
+   - If specific crop IS present, but pest/symptom is missing → needs_clarification=false (Stage 3 will handle pest confirmation)
+   - Weather queries do NOT need clarification for null crop.
 
 Return JSON only:
 {{
@@ -239,16 +241,13 @@ Return JSON only:
 }}
 
 Examples:
-"सोयाबीनचे भाव काय आहेत?" → crop="soybean", language="mr"
-"kanda vikaycha ahe 200 quintal" → crop="onion", qty="200", qty_unit="quintal"
-"paus yeil ka pudhe 3 diwas cotton la" → crop="cotton", forecast_days=3
-"aaj spray karu ka" → crop=null, raw_intent="spray safety check today"
-"mera gehun 50 bag bechna hai" → crop="wheat", qty="50", qty_unit="bag", language="hi"
-"lokwan variety sathi bhav" → crop="wheat", variety="lokwan"
-"soybean la stem borer zala, kay maru?" → crop="soybean", pest=["stem_borer"], raw_intent="stem borer pest control"
-"cotton la pane pivali padtat" → crop="cotton", symptom="leaves turning yellow", pest=null
-"tomato la blight ani bhuri dono aahet" → crop="tomato", pest=["blight","powdery_mildew"]
-"burshinashak sanga soybean sathi" → crop="soybean", category_intent="fungicide"
+"pik kharab zhalay" → crop=null, pest=null, symptom=null, needs_clarification=true, clarification_aspect="crop"
+"rice kharab zhala aahe" → crop="rice", pest=null, symptom=null, needs_clarification=false
+"bhav kiti aahet" → crop=null, needs_clarification=true, clarification_aspect="crop"
+"soya la bhav kiti" → crop="soybean", needs_clarification=false
+"paus yeil ka" → crop=null, raw_intent="weather forecast", needs_clarification=false
+"cotton la pane pivali padtat" → crop="cotton", symptom="leaves turning yellow", needs_clarification=false
+"tomato la blight zala" → crop="tomato", pest=["blight"], needs_clarification=false
 "hi" → needs_clarification=true, clarification_aspect="service" """
 
     try:
@@ -570,24 +569,25 @@ CLARIFICATION_MESSAGES = {
     # Farmer either types the actual pest, or explicitly says "no"/"nahi" to
     # get PGR/growth-booster advice instead. Prevents the silent PGR
     # fallback that used to happen when pest was simply missing.
+    # ── NEW (Fix 13): shown BEFORE payment when crop is known but pest/symptom is not.
     "pest_confirm": {
         "mr": (
             "✅ *पीक: {crop}*\n\n"
-            "तुम्ही कीड/रोग सांगितला नाही.\n"
-            "🐛 कीड/रोगाचे नाव टाइप करा (उदा: मावा, खोडकिडा, करपा)\n"
-            "किंवा 'नाही' लिहा — growth booster सल्ला मिळेल."
+            "तुम्ही कोणती कीड, रोग किंवा लक्षणे सांगितली नाहीत.\n\n"
+            "🐛 *कीडीचे नाव* (उदा: मावा, करपा) किंवा *लक्षणे* (उदा: पाने पिवळी पडत आहेत) खाली टाइप करा.\n\n"
+            "किंवा औषध नको असल्यास 'नाही' लिहा — Growth Booster (PGR) सल्ला मिळेल."
         ),
         "hi": (
             "✅ *फसल: {crop}*\n\n"
-            "आपने कीट/रोग नहीं बताया।\n"
-            "🐛 कीट/रोग का नाम टाइप करें (जैसे: माहू, तना छेदक)\n"
-            "या 'नहीं' लिखें — ग्रोथ बूस्टर सलाह मिलेगी।"
+            "आपने कोई कीट, रोग या लक्षण नहीं बताया।\n\n"
+            "🐛 *कीट का नाम* (जैसे: माहू) या *लक्षण* (जैसे: पत्ते पीले हो रहे हैं) नीचे टाइप करें।\n\n"
+            "या दवा नहीं चाहिए तो 'नहीं' लिखें — Growth Booster सलाह मिलेगी।"
         ),
         "en": (
             "✅ *Crop: {crop}*\n\n"
-            "You haven't mentioned a pest/disease.\n"
-            "🐛 Type the pest/disease name (e.g. aphid, stem borer)\n"
-            "or reply 'no' — you'll get growth booster suggestions instead."
+            "You haven't mentioned a pest, disease, or symptom.\n\n"
+            "🐛 Type the *pest name* (e.g., aphid) OR *describe the symptom* (e.g., leaves turning yellow).\n\n"
+            "Or reply 'no' to skip and get Growth Booster advice instead."
         ),
     },
 }
