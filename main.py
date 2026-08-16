@@ -49,7 +49,7 @@ import logging
 import os
 from typing import Optional, Tuple
 from datetime import date, timedelta
-
+import httpx
 
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -722,6 +722,52 @@ async def _send_payment(phone: str, session_id: str, lang: str) -> None:
         return
 
     service_type = session.get("service_type", "")
+    # ── Mandi preflight: check data exists before charging farmer ──────
+    if service_type == "mandi":
+        lat  = session.get("lat")
+        lon  = session.get("lon")
+        crop = session.get("crop", "")
+        radius_km = session.get("radius_km") or 100
+
+        if lat is not None and lon is not None and crop:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as http:
+                    resp = await http.get(
+                        "https://agriintellect.site/mandi-check",
+                        params={
+                            "crop": crop,
+                            "lat": float(lat),
+                            "lon": float(lon),
+                            "radius_km": int(radius_km),
+                        },
+                    )
+                preflight = resp.json()
+
+                if not preflight.get("has_data", True):
+                    logger.warning(
+                        f"[Main] Mandi preflight blocked payment | "
+                        f"session={session_id} crop={crop} radius={radius_km}km"
+                    )
+                    store.clear_session(session_id)
+                    await send_text(
+                        phone,
+                        (
+                            f"⚠️ माफ करा, आज *{crop}* साठी {radius_km}km च्या आत "
+                            f"कोणताही सक्रिय मंडी आढळला नाही.\n\n"
+                            "तुमचे पैसे वाचवले! 🌾\n\n"
+                            "वेगळ्या पिकासाठी किंवा उद्या पुन्हा प्रयत्न करा."
+                            if lang == "mr" else
+                            f"⚠️ Sorry, no active market found for *{crop}* "
+                            f"within {radius_km}km today.\n\n"
+                            "Your money has been saved! 🌾\n\n"
+                            "Try another crop or check again tomorrow."
+                        ),
+                    )
+                    return
+
+            except Exception as e:
+                # Fail open — preflight error must never block payment
+                logger.warning(f"[Main] Mandi preflight error (fail-open): {e}")
 
     link_result = await create_payment_link(
         session_id   = session_id,
