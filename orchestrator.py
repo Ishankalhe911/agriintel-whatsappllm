@@ -566,28 +566,40 @@ CLARIFICATION_MESSAGES = {
         "en": "Which pest or disease?\n\nExample: aphid, stem borer, blight, powdery mildew\nOr describe symptoms: 'leaves turning yellow'",
     },
     # ── NEW (Fix 13): shown BEFORE payment when crop is known but pest/symptom is not.
-    # Farmer either types the actual pest, or explicitly says "no"/"nahi" to
-    # get PGR/growth-booster advice instead. Prevents the silent PGR
-    # fallback that used to happen when pest was simply missing.
-    # ── NEW (Fix 13): shown BEFORE payment when crop is known but pest/symptom is not.
+
     "pest_confirm": {
         "mr": (
             "✅ *पीक: {crop}*\n\n"
-            "तुम्ही कोणती कीड, रोग किंवा लक्षणे सांगितली नाहीत.\n\n"
-            "🐛 *कीडीचे नाव* (उदा: मावा, करपा) किंवा *लक्षणे* (उदा: पाने पिवळी पडत आहेत) खाली टाइप करा.\n\n"
-            "किंवा औषध नको असल्यास 'नाही' लिहा — Growth Booster (PGR)/पीक वाढीची औषधं सल्ला मिळेल."
+            "नक्की काय दिसत आहे ते सांगा 👇\n\n"
+            "🟡 *रंग बदल* — पाने पिवळी, लाल किंवा काळी पडत आहेत का?\n"
+            "🕳️ *छिद्रे / अळी* — पाने/फळे खाल्ली आहेत किंवा अळी दिसतेय का?\n"
+            "🕸️ *चुरडा-मुरडा* — पाने वाकडी किंवा गोळा झाली आहेत का?\n"
+            "🦠 *बुरशी / डाग* — पानांवर पांढरी भुकटी किंवा करडे डाग आहेत का?\n"
+            "🥀 *मर / सुकणे* — पूर्ण झाड अचानक सुकत/कोमेजत आहे का?\n\n"
+            "वरीलपैकी जे दिसते ते सांगा — अचूक औषध मिळेल! 🌾\n"
+            "(किंवा औषध नको असल्यास 'नाही' लिहा — Growth Booster सल्ला मिळेल)"
         ),
         "hi": (
             "✅ *फसल: {crop}*\n\n"
-            "आपने कोई कीट, रोग या लक्षण नहीं बताया।\n\n"
-            "🐛 *कीट का नाम* (जैसे: माहू) या *लक्षण* (जैसे: पत्ते पीले हो रहे हैं) नीचे टाइप करें।\n\n"
-            "या दवा नहीं चाहिए तो 'नहीं' लिखें — Growth Booster सलाह मिलेगी।"
+            "खेत में क्या लक्षण दिख रहे हैं? 👇\n\n"
+            "🟡 *रंग बदलना* — पत्ते पीले, लाल या काले हो रहे हैं?\n"
+            "🕳️ *छेद / सुंडी* — पत्तों/फलों में छेद हैं या इल्ली दिख रही है?\n"
+            "🕸️ *पत्ते मुड़ना* — क्या पत्ते सिकुड़ या मुड़ रहे हैं (Leaf curl)?\n"
+            "🦠 *फफूंद / धब्बे* — पत्तों पर सफेद पाउडर या धब्बे हैं?\n"
+            "🥀 *सूखना (Wilt)* — क्या पूरा पौधा अचानक सूख रहा है?\n\n"
+            "इनमें से जो दिख रहा है वो बताएं — सटीक दवा मिलेगी! 🌾\n"
+            "(या दवा नहीं चाहिए तो 'नहीं' लिखें — Growth Booster सलाह मिलेगी)"
         ),
         "en": (
             "✅ *Crop: {crop}*\n\n"
-            "You haven't mentioned a pest, disease, or symptom.\n\n"
-            "🐛 Type the *pest name* (e.g., aphid) OR *describe the symptom* (e.g., leaves turning yellow).\n\n"
-            "Or reply 'no' to skip and get Growth Booster advice instead."
+            "What exact symptoms are you seeing? 👇\n\n"
+            "🟡 *Color Change* — Leaves turning yellow, red, or black?\n"
+            "🕳️ *Holes / Worms* — Holes in leaves/fruits, or visible caterpillars?\n"
+            "🕸️ *Curling* — Are the leaves wrinkling or curling up?\n"
+            "🦠 *Fungus / Spots* — White powder or brown/black spots?\n"
+            "🥀 *Wilting* — Is the whole plant suddenly drying up?\n\n"
+            "Reply with what you see to get the exact chemical! 🌾\n"
+            "(Or reply 'no' to skip and get Growth Booster advice)"
         ),
     },
 }
@@ -817,10 +829,32 @@ async def orchestrate(
 
     crop = extraction.get("crop", "") or ""
 
+    # ── FIX 15: HARDCODED CROP CHECK BEFORE PAYMENT ──
+    if service_type in ["mandi", "fertilizer"] and not crop:
+        session_store.update_session_data(
+            session_id,
+            service_type=service_type,
+            qty=extraction.get("qty"),             # <-- ADDED THIS (So we don't forget quantity!)
+            variety=extraction.get("variety"),     # <-- ADDED THIS
+            pest=extraction.get("pest"),
+            symptom=extraction.get("symptom"),
+            category_intent=extraction.get("category_intent"),
+            language=lang,
+        )
+        reply = CLARIFICATION_MESSAGES["crop"].get(lang, CLARIFICATION_MESSAGES["crop"]["mr"])
+        return {
+            "status": "needs_clarification",
+            "service_type": service_type,
+            "reply_message": reply,
+            "session_updated": True,
+            "detected_language": lang,
+            "crop": None, 
+            "qty": extraction.get("qty"),          # <-- ADDED THIS
+            "needs_location": False,
+            "needs_horizon": False,
+        }
+
     # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
-    # If neither pest, symptom, nor an explicit chemical category was given,
-    # do NOT silently fall through to PGR. Ask the farmer directly: type the
-    # pest, or say "no" to confirm they really do want growth-booster advice.
     if service_type == "fertilizer":
         pest_mentioned = (
             extraction.get("pest")
@@ -833,6 +867,8 @@ async def orchestrate(
                 session_id,
                 service_type="fertilizer",
                 crop=crop,
+                qty=extraction.get("qty"),         # <-- FIXED: You missed this!
+                variety=extraction.get("variety"), # <-- FIXED: You missed this!
                 language=lang,
                 awaiting="pest_confirmation",
             )
@@ -846,16 +882,17 @@ async def orchestrate(
                 "reply_message": reply_msg,
                 "session_updated": True,
                 "detected_language": lang,
-                "crop": crop, "qty": None,
+                "crop": crop, 
+                "qty": extraction.get("qty"),      # <-- FIXED: You missed this!
                 "needs_location": False,
+                "needs_horizon": False,            # <-- FIXED: You missed this!
             }
 
     # ── Save to session ─────────────────────────────────────────────────────
-    # Fix 5: pest/symptom/category_intent now saved to session
     session_store.update_session_data(
         session_id,
         service_type=service_type,
-        crop=extraction.get("crop"),
+        crop=crop,
         qty=extraction.get("qty"),
         variety=extraction.get("variety"),
         radius_km=extraction.get("radius_km") or 100,
@@ -870,8 +907,7 @@ async def orchestrate(
         raw_intent=extraction.get("raw_intent", ""),
     )
 
-    # Fix 6+7: explicit ack per service, fertilizer gets NO location prompt
-    # needs_location tells main.py whether to send the location request button
+    # ── Final Acks ──
     if service_type == "mandi":
         needs_horizon = False
         needs_location = True
@@ -882,29 +918,36 @@ async def orchestrate(
         }
 
     elif service_type == "fertilizer":
-        # By this point pest_mentioned is guaranteed truthy (handled above)
         needs_location = False
         needs_horizon = False
-        pest_mentioned = extraction.get("pest") or extraction.get("symptom")
+        
+        # ── FIX 16: CLEAN LIST FORMATTING ──
+        raw_pest = extraction.get("pest")
+        if isinstance(raw_pest, list) and len(raw_pest) > 0:
+            pest_display = ", ".join(raw_pest).replace("_", " ").title()
+        else:
+            pest_display = extraction.get("symptom") or extraction.get("category_intent")
+
         ack = {
             "mr": (
                 f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*\n\n"
-                f"{'🐛 ' + str(pest_mentioned) + chr(10) + chr(10) if pest_mentioned else ''}"
+                f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 पेमेंट करा आणि CIBRC-approved रासायनिक सल्ला मिळवा."
             ),
             "hi": (
                 f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*\n\n"
+                f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 पेमेंट करें और CIBRC-approved रासायनिक सलाह पाएं।"
             ),
             "en": (
                 f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*\n\n"
+                f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 Pay to get CIBRC-approved chemical recommendations."
             ),
         }
 
     else:  # weather
         needs_location = True
-        # Skip horizon ask if extraction already found harvest_date
         needs_horizon = not bool(extraction.get("harvest_date"))
         ack = {
             "mr": (
