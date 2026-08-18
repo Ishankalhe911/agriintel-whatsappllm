@@ -42,9 +42,12 @@ CRITICAL DESIGN RULES:
     - DPDPA: consent logged at conversation start (first message from new farmer)
     - DPDPA: "delete my data" command honoured immediately, session cleared
 """
-
+import random
 import asyncio
 import json
+from google import genai
+from google.genai import types
+from whatsapp import get_media_url, download_media  # add to existing whatsapp imports
 import logging
 import os
 from typing import Optional, Tuple
@@ -290,6 +293,7 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
             if session:
                 store.clear_session(session.get("session_id", ""))
             await send_text(phone, _CANCEL_REPLY.get(lang, _CANCEL_REPLY["mr"]))
+
             return
 
     # ── Route by message type ─────────────────────────────────────────────
@@ -297,6 +301,36 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
     if msg_type == "text":
         text = msg.get("text") or ""
         await _handle_text_message(phone, text, session, lang)
+    elif msg_type == "audio":
+        audio_id = msg.get("audio_id")
+        media_url = await get_media_url(audio_id) if audio_id else None
+        
+        if not media_url:
+            await send_text(phone, "⚠️ ऑडिओ डाउनलोड करता आला नाही. कृपया टाईप करा." if lang == "mr" else "⚠️ Audio download failed. Please type.")
+            return
+            
+        audio_bytes = await download_media(media_url)
+        transcribed_text = await _transcribe_audio(audio_bytes)
+        
+        if not transcribed_text:
+            await send_text(phone, "⚠️ ऑडिओ समजला नाही. कृपया टाईप करा." if lang == "mr" else "⚠️ Could not understand audio. Please type.")
+            return
+            
+        logger.info(f"[Main] 🎙️ Audio transcribed for {phone[-4:]}: '{transcribed_text[:60]}'")
+        
+        # QA Catch: Check if they said "Cancel" or "Delete" via voice
+        text_lower = transcribed_text.lower().strip()
+        if any(trigger in text_lower for trigger in _DELETE_TRIGGERS):
+            await _handle_data_deletion(phone, session, lang)
+            return
+        if any(trigger in text_lower for trigger in _CANCEL_TRIGGERS):
+            if session:
+                store.clear_session(session.get("session_id", ""))
+            await send_text(phone, _CANCEL_REPLY.get(lang, _CANCEL_REPLY["mr"]))
+            return
+
+        # Treat as standard text flow
+        await _handle_text_message(phone, transcribed_text, session, lang)
 
     elif msg_type in ("button_reply", "list_reply"):
         reply_id    = msg.get("reply_id") or ""
@@ -341,7 +375,7 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
         await _handle_text_message(phone, text, session, lang)
 
     
-
+    
     elif msg_type == "location":
         lat = msg.get("lat")
         lon = msg.get("lon")
@@ -651,6 +685,29 @@ async def _handle_text_message(
     else:
         # fertilizer — no location needed, go straight to payment
         await _send_payment(phone, session_id, detected_lang)
+
+
+async def _transcribe_audio(audio_bytes: bytes) -> Optional[str]:
+    if not audio_bytes:
+        return None
+    try:
+        keys = [k for k in [
+            os.getenv("GEMINI_API_KEY_1"), os.getenv("GEMINI_API_KEY_2"),
+            os.getenv("GEMINI_API_KEY_3"), os.getenv("GEMINI_API_KEY_4"),
+            os.getenv("GEMINI_API_KEY_5"),
+        ] if k]
+        client = genai.Client(api_key=random.choice(keys))
+        response = await client.aio.models.generate_content(
+            model="gemini-3.1-flash-lite",  # use existing stack model
+            contents=[
+                "You are an expert transcriber. Transcribe this audio exactly. Output only the spoken text in the original language (Marathi, Hindi, or English). No extra text.",
+                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
+            ]
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"[Main] Audio transcription failed: {e}")
+        return None
 
 # ─── Location message handler ─────────────────────────────────────────────────
 

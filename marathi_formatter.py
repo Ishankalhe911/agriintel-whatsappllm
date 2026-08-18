@@ -672,9 +672,12 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 ━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
+━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
 DOSE:
 - dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
 - dosage.formulation_dose / dosage.ai_dose फक्त JSON मधील exact values — round करू नका
+- dosage.formulation_dose_per_acre / dosage.water_dilution_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करू नका
+- प्रति हेक्टर किंवा प्रति एकर आकडा एकक न सांगता कधीही देऊ नका
 
 BRANDS:
 - has_brand_info = false → brands/companies section पूर्णपणे skip करा
@@ -714,6 +717,8 @@ async def format_response_for_whatsapp(
             return _error_response("सध्या डेटा उपलब्ध नाही. सर्व्हर काही वेळात पुन्हा चालू होईल.")
         if error_type in ("BAD_REQUEST", "CROP_NOT_FOUND"):
             return _error_response(f"चुकीची माहिती पाठवली गेली: {error_reason}")
+        if error_type in ("NO_MARKETS_IN_RADIUS",):
+            return _error_response(f"⚠️ {error_reason}")
         return _error_response("तांत्रिक अडचणीमुळे माहिती मिळवता आली नाही.")
 
     # ── Endpoint-level no_match ───────────────────────────────────────────

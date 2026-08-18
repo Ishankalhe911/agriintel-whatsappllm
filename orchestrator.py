@@ -625,6 +625,8 @@ NOT_AGRI_MESSAGES = {
 
 # ─── Main Orchestrator ────────────────────────────────────────────────────────
 
+# ─── Main Orchestrator ────────────────────────────────────────────────────────
+
 async def orchestrate(
     message: str,
     session_store,
@@ -712,10 +714,16 @@ async def orchestrate(
             }
 
     # ── Stage 1: Preflight ──────────────────────────────────────────────────
-    preflight = await _preflight(message)
-    logger.info(f"[Orchestrator] Preflight: {preflight}")
-
     lang = "mr"  # Default until extraction detects language
+
+    # ── CHANGE 1: THE BYPASS: Skip Preflight if we are waiting for a crop or service ──
+    if prior.get("awaiting") in ["crop", "service"]:
+        logger.info(f"[Orchestrator] Bypassing Preflight (User is answering '{prior.get('awaiting')}' prompt)")
+        preflight = {"is_agri": True, "is_handled": True}
+        lang = prior.get("language", "mr")
+    else:
+        preflight = await _preflight(message)
+        logger.info(f"[Orchestrator] Preflight: {preflight}")
 
     if not preflight.get("is_agri"):
         return {
@@ -794,6 +802,7 @@ async def orchestrate(
             symptom=extraction.get("symptom"),
             category_intent=extraction.get("category_intent"),
             language=lang,
+            awaiting=aspect, # <--- CHANGE 2: TAG MEMORY
         )
         return {
             "status": "needs_clarification",
@@ -817,6 +826,7 @@ async def orchestrate(
         reply = CLARIFICATION_MESSAGES["service"].get(
             lang, CLARIFICATION_MESSAGES["service"]["mr"]
         )
+        session_store.update_session_data(session_id, awaiting="service") # <--- CHANGE 3: TAG MEMORY
         return {
             "status": "needs_clarification",
             "service_type": None,
@@ -840,6 +850,7 @@ async def orchestrate(
             symptom=extraction.get("symptom"),
             category_intent=extraction.get("category_intent"),
             language=lang,
+            awaiting="crop",  # <--- CHANGE 4: TAG MEMORY
         )
         reply = CLARIFICATION_MESSAGES["crop"].get(lang, CLARIFICATION_MESSAGES["crop"]["mr"])
         return {
@@ -889,6 +900,7 @@ async def orchestrate(
             }
 
     # ── Save to session ─────────────────────────────────────────────────────
+    # Fix 5: pest/symptom/category_intent now saved to session
     session_store.update_session_data(
         session_id,
         service_type=service_type,
@@ -905,9 +917,12 @@ async def orchestrate(
         category_intent=extraction.get("category_intent"),
         language=lang,
         raw_intent=extraction.get("raw_intent", ""),
+        awaiting=None,  # <--- CHANGE 5: WIPE MEMORY ON SUCCESS
     )
 
     # ── Final Acks ──
+    # Fix 6+7: explicit ack per service, fertilizer gets NO location prompt
+    # needs_location tells main.py whether to send the location request button
     if service_type == "mandi":
         needs_horizon = False
         needs_location = True
@@ -918,6 +933,7 @@ async def orchestrate(
         }
 
     elif service_type == "fertilizer":
+        # By this point pest_mentioned is guaranteed truthy (handled above)
         needs_location = False
         needs_horizon = False
         
@@ -948,6 +964,7 @@ async def orchestrate(
 
     else:  # weather
         needs_location = True
+        # Skip horizon ask if extraction already found harvest_date
         needs_horizon = not bool(extraction.get("harvest_date"))
         ack = {
             "mr": (

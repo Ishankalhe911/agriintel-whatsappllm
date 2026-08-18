@@ -15,6 +15,7 @@ Responsibilities:
     5. Sending messages: text, interactive buttons, CTA-URL (payment links),
        location-request (native "share location" button instead of asking
        the farmer to type an address).
+    6. Media Handling: Fetching and downloading audio messages.
 
 CRITICAL RULES (mirrors x402_client.py conventions — do not break):
     - All Graph API calls are async httpx, with a shared timeout.
@@ -165,8 +166,9 @@ def parse_incoming_webhook(payload: dict) -> Optional[dict]:
             "message_id": str,
             "phone": str,                 # sender's WhatsApp number
             "timestamp": str,
-            "type": "text"|"location"|"button_reply"|"list_reply"|"unsupported",
+            "type": "text"|"location"|"button_reply"|"list_reply"|"audio"|"unsupported",
             "text": str or None,
+            "audio_id": str or None,      # Audio PR addition
             "lat": float or None,
             "lon": float or None,
             "reply_id": str or None,      # button/list id if applicable
@@ -174,8 +176,7 @@ def parse_incoming_webhook(payload: dict) -> Optional[dict]:
         }
 
     Returns None for non-message events (status updates like "delivered",
-    "read" receipts — Meta sends those on the same webhook URL, and they
-    are noise for us, not farmer messages).
+    "read" receipts).
     """
     try:
         entry = payload.get("entry", [])[0]
@@ -184,7 +185,6 @@ def parse_incoming_webhook(payload: dict) -> Optional[dict]:
 
         messages = value.get("messages")
         if not messages:
-            # This was a status callback (sent/delivered/read), not a message
             return None
 
         msg = messages[0]
@@ -199,6 +199,7 @@ def parse_incoming_webhook(payload: dict) -> Optional[dict]:
             "timestamp": timestamp,
             "type": msg_type,
             "text": None,
+            "audio_id": None,
             "lat": None,
             "lon": None,
             "reply_id": None,
@@ -207,6 +208,9 @@ def parse_incoming_webhook(payload: dict) -> Optional[dict]:
 
         if msg_type == "text":
             parsed["text"] = msg.get("text", {}).get("body")
+
+        elif msg_type == "audio":
+            parsed["audio_id"] = msg.get("audio", {}).get("id")
 
         elif msg_type == "location":
             loc = msg.get("location", {})
@@ -226,7 +230,6 @@ def parse_incoming_webhook(payload: dict) -> Optional[dict]:
                 parsed["reply_title"] = interactive["list_reply"]["title"]
 
         else:
-            # image/audio/video/document/sticker/contacts/unsupported etc.
             parsed["type"] = "unsupported"
 
         return parsed
@@ -390,3 +393,49 @@ async def send_location_request(to: str, body_text: str) -> dict:
         },
     }
     return await _post(payload)
+
+
+# ─── 6. Media Handling (Audio Downloads) ─────────────────────────────────────
+
+async def get_media_url(media_id: str) -> Optional[str]:
+    """Get the actual download URL from Meta using the audio_id."""
+    if not WHATSAPP_TOKEN:
+        logger.error("[WhatsApp] WHATSAPP_TOKEN not set")
+        return None
+
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            response = await http.get(url, headers=headers)
+            
+        if response.status_code == 200:
+            return response.json().get("url")
+            
+        logger.error(f"[WhatsApp] Failed to get media URL {response.status_code}: {response.text}")
+        return None
+    except Exception as e:
+        logger.error(f"[WhatsApp] Media URL request failed: {e}")
+        return None
+
+
+async def download_media(media_url: str) -> Optional[bytes]:
+    """Download the actual .ogg audio file bytes from the Meta URL."""
+    if not WHATSAPP_TOKEN:
+        return None
+        
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            response = await http.get(media_url, headers=headers)
+            
+        if response.status_code == 200:
+            return response.content  # Return raw bytes
+            
+        logger.error(f"[WhatsApp] Media download failed {response.status_code}")
+        return None
+    except Exception as e:
+        logger.error(f"[WhatsApp] Media download request failed: {e}")
+        return None
