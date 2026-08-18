@@ -672,7 +672,6 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 ━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
-━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
 DOSE:
 - dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
 - dosage.formulation_dose / dosage.ai_dose फक्त JSON मधील exact values — round करू नका
