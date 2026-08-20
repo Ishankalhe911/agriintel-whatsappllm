@@ -866,12 +866,18 @@ async def orchestrate(
         }
 
     # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
+    # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
     if service_type == "fertilizer":
-        pest_mentioned = (
-            extraction.get("pest")
-            or extraction.get("symptom")
-            or extraction.get("category_intent")
-        )
+        
+        raw_pest = extraction.get("pest")
+        raw_symptom = extraction.get("symptom")
+        cat_intent = (extraction.get("category_intent") or "").upper()
+
+        # It's only a valid request if we have an actual pest/symptom, 
+        # OR if they explicitly just want a Growth Booster (PGR)
+        pest_mentioned = bool(raw_pest) or bool(raw_symptom) or (cat_intent == "PGR")
+
+        
 
         if not pest_mentioned:
             session_store.update_session_data(
