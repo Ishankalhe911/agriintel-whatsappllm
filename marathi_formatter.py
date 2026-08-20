@@ -165,7 +165,11 @@ next_dry_spell          → {{ start_date, end_date, days }} — कोरड्
 optimal_drone_spray_dates[] → Delta-T (2-8°C) + वारा (<15km/h) + पाऊस (<2mm) या तिन्ही
                           अटी पूर्ण असलेले दिवस — हे वैज्ञानिकदृष्ट्या सर्वोत्तम फवारणीचे दिवस
 pest_disease_risk_windows[] → सलग 3+ दिवस RH>85% + तापमान 25-32°C असेल तर कीड/बुरशी धोका
-wind_risk_days[]        → वारा >20km/h चे दिवस — फवारणी टाळा (रसायन वाया जाते, drift होते)
+wind_risk_days[]        → दैनंदिन कमाल वारा >20km/h चे दिवस — हे DAILY MAXIMUM आहे, सरासरी नाही.
+                          महाराष्ट्रात मान्सूनमध्ये हे सामान्य आहे.
+                          ⚠️ संपूर्ण दिवस टाळू नका — best_spray_window_by_day मध्ये
+                          सकाळच्या वेळेत अनुकूल खिडकी असू शकते.
+                          फक्त दुपारी/जोरदार वाऱ्याच्या वेळी टाळा.
 heavy_rain_days[]       → जड पाऊस (पीक-specific threshold ओलांडलेले) day index (1=आज)
 heat_stress_days[]      → उष्णता (पीक-specific max temp ओलांडलेले) day index (1=आज)
 gdd_accumulated_forecast_window → पुढील 16 दिवसांत पीक किती "उष्णता एकक" मिळवणार
@@ -174,7 +178,9 @@ gdd_accumulated_forecast_window → पुढील 16 दिवसांत प
 growth_stage            → पिकाची सध्याची अवस्था (sowing_date असल्यास):
                           germination=उगवण | vegetative=वाढ | flowering=फुलोरा ⚠️सर्वात नाजूक
                           pod_fill=शेंगा भरणे | maturity=पक्वता
-irrigation_recommended  → true = सिंचन करा (net_water_balance_7d < -5mm असेल तर येते)
+irrigation_recommended  → हे field null असते — net_water_balance_7d वरूनच सिंचन सल्ला द्या
+                          null असेल तर हे field पूर्णपणे skip करा, output मध्ये कधीही null छापू नका
+irrigation_recommendation_status → हे field असेल तर पूर्णपणे skip करा — output मध्ये दाखवू नका
 net_water_balance_7d    → ७ दिवसांत पाऊस minus वाफ (ET0) = निव्वळ पाणीसाठा (mm)
                           >0 = पाणी जास्त (ओलसर) | -5 ते 0 = किरकोळ कमतरता
                           -5 ते -10 = सिंचन करा | < -10 = गंभीर कमतरता ⚠️ तातडीने सिंचन
@@ -189,8 +195,10 @@ t_max_c     → जास्तीत जास्त तापमान (°C)
 t_min_c     → किमान तापमान (°C)
 rh_max_pct  → जास्तीत जास्त आर्द्रता (%) — >85% + उबदार = बुरशी/कीड धोका
 rh_min_pct  → किमान आर्द्रता (%) — Delta-T गणनेसाठी वापरली जाते
-wind_kmh    → वाऱ्याचा वेग (km/h) — >20 = फवारणी टाळा | 3-15 = आदर्श
-wcode       → WMO हवामान कोड (खाली अर्थ पहा):
+wind_kmh      → वाऱ्याचा वेग km/h — >20 = फवारणी टाळा | 3-15 = आदर्श
+wind_gust_kmh → जोरदार वाऱ्याचा वेग km/h — wind_kmh पेक्षा जास्त असेल तर ⚠️ फवारणी धोकादायक
+               null असेल तर हे field पूर्णपणे skip करा
+wcode         → WMO हवामान कोड (खाली अर्थ पहा):
               0=स्वच्छ ☀️ | 1-3=ढगाळ 🌤️ | 45-48=धुके 🌫️
               51-67=पाऊस 🌧️ | 80-82=मुसळधार 🌧️⚠️ | 95-99=मेघगर्जना ⛈️
               ⚠️ wcode 95-99 असेल त्या दिवशी शेतात काम करू नका
@@ -228,6 +236,21 @@ COMBINED EFFECT (हे महत्वाचे):
   El Niño + positive_iod  → ≈ balanced — सामान्य पाऊस शक्य
   El Niño + negative_iod  → 🔴 दुष्काळ धोका — सिंचन योजना आखा
 
+━━━ FIELD MEANINGS — best_spray_window_by_day (नवीन) ━━━
+हे field असेल तर → प्रत्येक दिवसासाठी सर्वोत्तम फवारणी वेळ दिला आहे.
+structure: {{ "YYYY-MM-DD": {{ window_start, window_end, avg_wind_kmh, max_wind_kmh,
+             max_gust_kmh, rain_mm, rain_probability_max_pct, spray_status }} }}
+spray_status values:
+  "favorable"   → ✅ फवारणीसाठी उत्तम वेळ
+  "caution"     → ⚠️ सावधगिरीने — वारा थोडा जास्त, लक्ष ठेवा
+  "unfavorable" → ❌ फवारणी टाळा
+window_start/end → "2026-08-20T06:00" format — "सकाळी ६ ते ९" असे मराठीत सांगा
+max_gust_kmh → null असेल तर skip करा
+rain_probability_max_pct → null असेल तर skip करा
+⚠️ एखाद्या दिवसाचा value null असेल (best window नाही) → त्या दिवशी "फवारणीसाठी चांगली वेळ नाही" सांगा
+
+spray_windows → हे full hourly breakdown आहे — output मध्ये दाखवू नका, फक्त best_spray_window_by_day वापरा
+
 ━━━ KEY THRESHOLDS (interpret करताना वापरा) ━━━
 net_water_balance_7d:
   > 0        → जमिनीत पाणी पुरेसे आहे
@@ -239,10 +262,16 @@ Delta-T (optimal_drone_spray_dates मधून अप्रत्यक्ष�
   <2°C = धुके/inversion — फवारणी टाळा (drift होते)
   >8°C = खूप उष्ण/कोरडे — थेंब वाफ होतात, रसायन वाया (सकाळी लवकर/संध्याकाळी करा)
   ⚠️ optimal_drone_spray_dates रिकामा असेल तर पुढील काही दिवस फवारणीसाठी चांगले नाहीत
-wind_kmh (daily_preview):
-  < 15 km/h  → फवारणीसाठी योग्य
-  15-20 km/h → सावधानता — बारीक थेंब वापरू नका
-  > 20 km/h  → फवारणी टाळा (रसायन शेजारच्या शेतात जाते, नुकसान)
+wind_kmh (daily_preview) — हा दिवसाचा कमाल वेग आहे, सरासरी नाही:
+  < 15 km/h  → दिवसभर फवारणीसाठी योग्य
+  15-25 km/h → सकाळी लवकर किंवा संध्याकाळी वेळ निवडा — best_spray_window_by_day पहा
+  > 25 km/h  → ⚠️ जोरदार वारा — best_spray_window_by_day मध्ये योग्य वेळ असेल तरच फवारणी करा
+  > 35 km/h  → ❌ फवारणी टाळा — रसायन शेजारच्या शेतात जाते, गंभीर नुकसान
+wind_gust_kmh (daily_preview) — हा अधिक महत्वाचा आकडा आहे:
+  < 20 km/h  → ड्रोन + manual sprayer दोन्ही ठीक
+  20-30 km/h → manual knapsack ठीक — ड्रोन DGCA नियमानुसार टाळा
+  > 30 km/h  → ⚠️ कोणतीही फवारणी टाळा — रसायन वाया जाते
+  null असेल → wind_kmh वरूनच निर्णय घ्या
 growth_stage + net_water_balance सल्ला:
   flowering (फुलोरा) + negative balance → ⚠️ तातडीने सिंचन — या अवस्थेत पाण्याची कमतरता उत्पादनावर थेट परिणाम करते
   pod_fill + heavy_rain → बुरशीजन्य रोगांसाठी prophylactic फवारणी विचार करा
@@ -250,12 +279,19 @@ growth_stage + net_water_balance सल्ला:
 ━━━ HOW TO ANSWER (शेतकऱ्याचा प्रश्न वाचा, त्यानुसार उत्तर द्या) ━━━
 
 फवारणी बद्दल विचारले (आज/उद्या/परवा) →
-  त्या दिवसाचा daily_preview मधून: rain_mm, wind_kmh, wcode.
-  optimal_drone_spray_dates मध्ये तो दिवस असेल → ✅ ड्रोन फवारणीसाठी आदर्श.
-  wind_risk_days मध्ये तो दिवस असेल → ⚠️ फवारणी टाळा, वारा जास्त आहे.
-  wcode 95-99 असेल → ⚠️ मेघगर्जना — शेतात जाऊ नका.
-  pest_disease_risk_windows असेल तर mention करा — फवारणीची तातडी वाढते.
-  optimal_drone_spray_dates रिकामा असेल → "पुढील काही दिवस फवारणीसाठी हवामान अनुकूल नाही"
+  Step 1 — त्या दिवसाचा daily_preview मधून: rain_mm, wind_kmh, wind_gust_kmh (null नसेल तर), wcode.
+  Step 2 — best_spray_window_by_day मध्ये त्या दिवसाची entry पहा:
+    spray_status = "favorable" → ✅ "[window_start→मराठी वेळ] ते [window_end→मराठी वेळ]" ही फवारणीसाठी सर्वोत्तम वेळ
+    spray_status = "caution"   → ⚠️ "[वेळ]" ला फवारणी शक्य — वारा [max_wind_kmh] km/h, सावधगिरीने
+    spray_status = "unfavorable" किंवा null → त्या दिवशी फवारणीसाठी चांगली वेळ नाही
+  Step 3 — wind_risk_days मध्ये तो दिवस असेल:
+    → best_spray_window_by_day मध्ये "favorable" किंवा "caution" असेल → त्या वेळेत फवारणी शक्य आहे असे सांगा
+    → best_spray_window_by_day मध्ये सर्व "unfavorable" असेल → ⚠️ आज वारा जास्त, उद्या पहा
+    → "दुपारी वारा जास्त असतो — सकाळी लवकर फवारणी करा" हा सल्ला नेहमी द्या
+  Step 4 — wcode 95-99 असेल → ⚠️ मेघगर्जना — शेतात जाऊ नका
+  Step 5 — pest_disease_risk_windows असेल → फवारणीची तातडी आहे असे सांगा
+  Step 6 — optimal_drone_spray_dates मध्ये तो दिवस असेल → ✅ ड्रोन फवारणीसाठी आदर्श — Delta-T योग्य आहे
+  best_spray_window_by_day रिकामा किंवा null असेल → "पुढील काही दिवस फवारणीसाठी हवामान अनुकूल नाही"
 
 पाऊस बद्दल विचारले →
   next_rain_date सांगा (मराठी date).
@@ -288,8 +324,8 @@ growth_stage + net_water_balance सल्ला:
 [surplus/deficit interpretation येथे]
 
 ☀️ *पुढील [N] दिवस:*
-- [मराठी date] [wcode emoji]: [rain_mm] मिमी पाऊस, [t_max_c]°C, वारा [wind_kmh] km/h
-[प्रत्येक दिवस असाच — daily_preview मधील सर्व दिवस]
+- [मराठी date] [wcode emoji]: [rain_mm] मिमी पाऊस, [t_max_c]°C, वारा [wind_kmh] km/h[wind_gust_kmh null नसेल: (जोर [wind_gust_kmh])]
+[daily_preview मधील पहिले ७ दिवस — बाकी शेतकऱ्याने विचारल्यासच]
 
 💧 *पाण्याचा ताळेबंद (७ दिवस):* [net_water_balance_7d] मिमी
 (पाऊस [rainfall_7d_mm] मिमी − वाफ [et0_7d_mm] मिमी)
@@ -301,9 +337,13 @@ growth_stage + net_water_balance सल्ला:
 [growth_stage विशेष सल्ला येथे]
 
 🚜 *फवारणी सल्ला:*
-✅ सर्वोत्तम दिवस: [optimal_drone_spray_dates → मराठीत] (Delta-T + वारा योग्य)
-⚠️ टाळा: [wind_risk_days → मराठीत] — वारा जास्त
-[pest_disease_risk_windows असेल:] 🐛 कीड/बुरशी धोका: [dates → मराठीत] — आत्ताच फवारणी विचार करा
+[best_spray_window_by_day असेल तर पहिल्या ३ दिवसांसाठी:]
+- [मराठी date]: [spray_status emoji] [window_start→मराठी वेळ] ते [window_end→मराठी वेळ] | वारा [max_wind_kmh] km/h[max_gust_kmh null नसेल: , जोर [max_gust_kmh] km/h]
+[null entry असेल त्या दिवशी:] - [मराठी date]: ❌ फवारणीसाठी चांगली वेळ नाही
+[optimal_drone_spray_dates रिकामे नसेल:]
+✅ *ड्रोन फवारणी:* [dates → मराठीत] — Delta-T + वारा आदर्श[wind_risk_days रिकामे नसेल:]
+⏰ *वेळ महत्वाची:* [wind_risk_days मराठीत] — दिवसभर कमाल वारा जास्त आहे, पण सकाळी लवकर (६-९) खिडकी असू शकते — वर पहा
+[pest_disease_risk_windows असेल:] 🐛 *कीड/बुरशी धोका:* [dates → मराठीत] — आत्ताच फवारणी विचार करा
 
 🌡️ *पीक ताण:* [crop_stress_risk_level मराठीत]
 [crop_stress_factors असतील:] कारण: [factors]
@@ -332,9 +372,20 @@ growth_stage + net_water_balance सल्ला:
 - heavy_rain_days/heat_stress_days मधील संख्या → daily_preview मधून actual date काढा
 - partial_data=true असेल तर: "काही दीर्घकालीन डेटा उपलब्ध नाही"
 - source="nasa_power_fallback" असेल: "ड्रोन फवारणी गणना सध्या उपलब्ध नाही"
+- irrigation_recommended null असेल → हे field output मध्ये कधीही छापू नका
+- irrigation_recommendation_status field → output मध्ये कधीही छापू नका
+- spray_windows (full hourly data) → output मध्ये कधीही छापू नका — फक्त best_spray_window_by_day वापरा
+- wind_gust_kmh null असेल → त्या दिवशी गस्ट mention करू नका
+- best_spray_window_by_day मधील value null असेल → "चांगली वेळ नाही" सांगा, null छापू नका
+- daily_preview पहिले ७ दिवसच सामान्य उत्तरात — शेतकऱ्याने "पुढील X दिवस" विचारल्यास अधिक दाखवा
 - JSON मध्ये नसलेले field/section पूर्णपणे skip करा
 - adjustment_basis "climatology only" असेल तर ENSO/IOD mention करू नका त्या महिन्यासाठी
-- rainfall_pct_of_normal शिवाय दीर्घकालीन पाऊस सांगू नका — हा आकडा अनिवार्य आहे"""
+- rainfall_pct_of_normal शिवाय दीर्घकालीन पाऊस सांगू नका — हा आकडा अनिवार्य आहे
+- wind_risk_days असेल → "फवारणी टाळा" असे सरळ सांगू नका — best_spray_window_by_day तपासा आणि वेळेचा सल्ला द्या
+- महाराष्ट्र मान्सून context: 15-25 km/h वारा सामान्य आहे — हे शेतकऱ्याला माहीत आहे, फक्त योग्य वेळ सांगा
+- दिवसाचा कमाल वारा (wind_kmh) वापरून संपूर्ण दिवस block करू नका — time-specific सल्ला द्या
+- wind_gust_kmh हा sustained wind_kmh पेक्षा अधिक महत्वाचा आहे फवारणी निर्णयासाठी
+- ड्रोन फवारणी: DGCA नियमानुसार gusts <20 km/h असणे आवश्यक — हे optimal_drone_spray_dates मध्ये आधीच तपासले आहे"""
 
     return await _call_gemini(prompt)
 
