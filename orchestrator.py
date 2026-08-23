@@ -328,7 +328,8 @@ WEATHER / RAIN:
 - Will it rain? Rain forecast next N days
 - Drought risk, water stress, season-to-date rainfall vs normal
 
-FARMING OPERATIONS:
+FARMING OPERATIONS (TIMING):
+- WHEN to spray chemicals or apply fertilizer (खत/युरिया कधी देऊ?)
 - Spray safety today? (Delta-T: 2-8°C optimal, wind <15kmh, rain <2mm)
 - Drone spray window safety check
 - Irrigation advice based on net water balance (rain - ET0)
@@ -344,26 +345,30 @@ SEASONAL (requires harvest_date):
 - ECMWF sub-seasonal weeks 3-4 outlook
 - NASA POWER 30yr climatology adjusted by ENSO/IOD phase
 
-CRITICAL RULE — SPRAY IS ALWAYS WEATHER:
-फवारणी/spray/drone spray → ALWAYS WEATHER even if crop mentioned
+CRITICAL RULE — TIMING IS ALWAYS WEATHER:
+फवारणी/spray/drone spray/खत देण्याची वेळ → ALWAYS WEATHER even if crop mentioned
 
 DISAMBIGUATION — WEATHER vs CROP PROTECTION:
 - "rog aahe, chemical sanga" → CROP PROTECTION (specific chemical needed)
 - "rog yeण्याची शक्यता आहे ka" → WEATHER (disease risk window)
 - "stem borer zala, kay maru" → CROP PROTECTION (treatment needed)
 - "keed yeण्याचा धोका ahe ka" → WEATHER (pest risk window)
+- "खत कधी देऊ?" (When to fertilize) → WEATHER (Timing)
+- "कोणते खत वापरू?" (Which fertilizer to buy) → CROP PROTECTION (Product)
 
-MARATHI: पाऊस, हवामान, फवारणी, सिंचन, दुष्काळ, वारा, उष्णता, धोका
-HINDI: बारिश, मौसम, सिंचाई, सूखा, हवा
-ENGLISH: rain, weather, spray, irrigation, drought, wind, forecast
+MARATHI: पाऊस, हवामान, फवारणी, सिंचन, दुष्काळ, वारा, उष्णता, धोका, कधी, वेळ
+HINDI: बारिश, मौसम, सिंचाई, सूखा, हवा, कब, समय
+ENGLISH: rain, weather, spray, irrigation, drought, wind, forecast, when, timing
 
 EXAMPLES:
 "आज फवारणी करू का?" → WEATHER (spray = weather always)
+"युरिया कधी टाकू?" → WEATHER (timing of fertilizer = weather)
 "paus yeil ka pudhe 7 diwas?" → WEATHER
 "drone udvu ka aaj?" → WEATHER (drone = spray safety)
 "soybean la heat stress ahe ka?" → WEATHER
 "September madhe paus kaasa rahil?" → WEATHER (subseasonal)
 """,
+# ... keep the parameters exactly the same ...
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -415,12 +420,14 @@ DISAMBIGUATION — CROP PROTECTION vs WEATHER:
 - "chemical sanga" → CROP PROTECTION ✅
 - "rog aahe" → CROP PROTECTION ✅ (disease present, needs treatment)
 - "rog येण्याची शक्यता" → WEATHER (disease risk forecast)
+- "कोणते खत टाकू?" (Which fertilizer) → CROP PROTECTION ✅
+- "खत कधी देऊ?" (When to fertilize) → WEATHER ❌ (Timing belongs to Weather)
 
 MARATHI: कीड, रोग, बुरशी, मावा, खोडकिडा, करपा, भुरी, तुडतुडे, फुलकिडे,
-         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment)
+         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment ONLY)
 HINDI: कीट, रोग, फफूंद, माहू, कीटनाशक, फफूंदनाशक, दवाई
 ENGLISH: pest, disease, fungus, aphid, stem borer, blight, chemical,
-         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment)
+         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment ONLY)
 
 EXAMPLES:
 "soybean la stem borer zala, kay maru?" → CROP PROTECTION
@@ -472,6 +479,7 @@ Extracted:
 - Intent: {extraction.get('raw_intent', 'unknown')}
 
 Call the correct tool. Key rules:
+- TIMING of operations (When to spray/fertilize/harvest/irrigate) → WEATHER
 - spray/फवारणी safety → WEATHER always
 - pest/disease TREATMENT or chemical needed → CROP PROTECTION
 - pest/disease RISK WINDOW forecast → WEATHER
@@ -922,6 +930,7 @@ async def orchestrate(
         symptom=extraction.get("symptom"),
         category_intent=extraction.get("category_intent"),
         language=lang,
+        original_message=message,
         raw_intent=extraction.get("raw_intent", ""),
         awaiting=None,  # <--- CHANGE 5: WIPE MEMORY ON SUCCESS
     )

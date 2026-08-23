@@ -195,7 +195,7 @@ async def handle_payment_event(
     phone        = session.get("phone") or phone_backup
     service_type = session.get("service_type", "")
     lang         = session.get("language", "mr")
-    raw_intent   = session.get("raw_intent", "")
+    farmer_msg   = session.get("original_message", "")
 
     if not phone:
         logger.error(
@@ -211,7 +211,7 @@ async def handle_payment_event(
             phone=phone,
             service_type=service_type,
             lang=lang,
-            raw_intent=raw_intent,
+            farmer_msg=farmer_msg,
             amount_paid=amount_paid,
             store=store,
             consent_logger=consent_logger,
@@ -248,7 +248,7 @@ async def _handle_paid(
     phone: str,
     service_type: str,
     lang: str,
-    raw_intent: str,
+    farmer_msg: str,
     amount_paid: int,
     store: SessionStore,
     consent_logger,
@@ -354,7 +354,7 @@ async def _handle_paid(
         formatted = await format_response_for_whatsapp(
             service_type=service_type,
             raw_data=result,
-            original_user_text=raw_intent,
+            original_user_text=farmer_msg,
         )
     except Exception as e:
         logger.error(f"[WalletMonitor] Formatter failed: {e}")
@@ -532,7 +532,7 @@ async def _retry_delivery_after_delay(
         return
 
     service_type = session.get("service_type", "")
-    raw_intent   = session.get("raw_intent", "")
+    farmer_msg   = session.get("original_message", "")
 
     logger.info(f"[WalletMonitor] Retrying delivery for session {session_id}")
 
@@ -555,7 +555,7 @@ async def _retry_delivery_after_delay(
         formatted = await format_response_for_whatsapp(
             service_type=service_type,
             raw_data=result,
-            original_user_text=raw_intent,
+            original_user_text=farmer_msg,
         )
     except Exception as e:
         logger.error(f"[WalletMonitor] Retry formatter failed: {e}")
