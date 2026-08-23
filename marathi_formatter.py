@@ -264,29 +264,32 @@ COMBINED EFFECT:
   El Niño + positive_iod  → ≈ balanced — सामान्य पाऊस शक्य
   El Niño + negative_iod  → 🔴 दुष्काळ धोका — सिंचन योजना आखा
 ━━━ KEY THRESHOLDS ━━━
-net_water_balance_7d:
-  > 0        → जमिनीत ओल उत्तम आहे
-  -15 ते 0   → सामान्य स्थिती — जमिनीत ओल टिकून आहे
-  -30 ते -15 → पाण्याची कमतरता — सिंचनाची सोय पहा
-  < -30      → गंभीर कमतरता — तातडीने सिंचन करा ⚠️
+━net_water_balance_7d:
+  > 0        → जमिनीत पाणी पुरेसे आहे
+  -5 ते 0    → किरकोळ कमतरता — पाण्यावर लक्ष ठेवा
+  -5 ते -10  → सिंचन करा
+  < -10      → गंभीर कमतरता — तातडीने सिंचन करा ⚠️
+
 Delta-T (optimal_drone_spray_dates मधून अप्रत्यक्षपणे):
   2-8°C  → आदर्श फवारणी — रसायन पिकापर्यंत नक्की पोहोचते
   <2°C   → धुके/inversion — फवारणी टाळा
   >8°C   → थेंब वाफ होतात — सकाळी लवकर/संध्याकाळी करा
+
 wind_kmh (daily_preview) — दिवसाचा कमाल वेग, सरासरी नाही:
   < 15 km/h  → दिवसभर फवारणीसाठी योग्य
   15-25 km/h → सकाळी/संध्याकाळी वेळ निवडा — best_spray_window_by_day पहा
   > 25 km/h  → best_spray_window_by_day मध्ये योग्य वेळ असेल तरच फवारणी करा
   > 35 km/h  → ❌ फवारणी टाळा — रसायन शेजारच्या शेतात जाते
+
 wind_gust_kmh — sustained wind_kmh पेक्षा अधिक महत्वाचा:
   < 20 km/h  → ड्रोन + manual दोन्ही ठीक
   20-35 km/h → manual knapsack ठीक — ड्रोन DGCA नियमानुसार टाळा
   > 35 km/h  → ❌ कोणतीही फवारणी टाळा
   null       → wind_kmh वरूनच निर्णय घ्या
-growth_stage + net_water_balance:
-  flowering + net_water_balance_7d < -20 → ⚠️ तातडीने सिंचन — फुलोरा अवस्थेत पाण्याची कमतरता उत्पादनावर थेट परिणाम करते
-  pod_fill + heavy_rain → बुरशीजन्य रोगांसाठी prophylactic फवारणी विचार करा
 
+growth_stage + net_water_balance:
+  flowering + net_water_balance_7d < -10 → ⚠️ तातडीने सिंचन — फुलोरा अवस्थेत पाण्याची कमतरता उत्पादनावर थेट परिणाम करते
+  pod_fill + heavy_rain → बुरशीजन्य रोगांसाठी prophylactic फवारणी विचार करा
 ━━━ SPRAY WINDOW OUTPUT RULES ━━━
 
 नियम १ — प्रत्येक window साठी हे सांगा:

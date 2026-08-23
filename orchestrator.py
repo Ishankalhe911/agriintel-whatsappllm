@@ -215,10 +215,7 @@ Rules:
    - ⚠️ CRITICAL: Must be a specific PHYSICAL/VISUAL symptom (e.g. "leaves turning yellow", "holes in leaves", "white spots"). 
    - Generic complaint words like "kharab zhala", "खराब झाले", "rog aala", "रोग आला", "nuksan", "problem aahe" are NOT symptoms. Set symptom=null for generic complaints.
 8. category_intent: if farmer asks for a specific chemical category. "बुरशीनाशक सांगा"→"fungicide", "तणनाशक"→"herbicide", "खत"→"fertilizer", "growth booster"→"PGR"
-9. needs_clarification:
-   - If user asks about Mandi prices or Crop Disease/Protection, but crop=null → needs_clarification=true, clarification_aspect="crop"
-   - If specific crop IS present, but pest/symptom is missing → needs_clarification=false (Stage 3 will handle pest confirmation)
-   - Weather queries do NOT need clarification for null crop.
+
 
 Return JSON only:
 {{
@@ -236,8 +233,7 @@ Return JSON only:
   "category_intent": null,
   "language": "mr",
   "raw_intent": "one line summary in English",
-  "needs_clarification": false,
-  "clarification_aspect": null
+
 }}
 
 Examples:
@@ -269,7 +265,7 @@ Examples:
             "harvest_date": None, "sowing_date": None, "forecast_days": 7,
             "pest": None, "symptom": None, "category_intent": None,
             "language": "mr", "raw_intent": "unknown",
-            "needs_clarification": True, "clarification_aspect": "service",
+            
         }
 
 
@@ -723,9 +719,15 @@ async def orchestrate(
 
     # ── Stage 1: Preflight ──────────────────────────────────────────────────
     lang = "mr"  # Default until extraction detects language
+    # ── NEW: Horizon bypass (If we are waiting for the 15/30/60 days button) ──
+    if prior.get("awaiting") == "horizon":
+        logger.info(f"[Orchestrator] Bypassing extraction/routing (awaiting horizon)")
+        # Fall through to the bottom. The routing bypass (Fix B) will catch it 
+        # and lock the service_type="weather"
+        pass
 
     # ── CHANGE 1: THE BYPASS: Skip Preflight if we are waiting for a crop or service ──
-    if prior.get("awaiting") in ["crop", "service"]:
+    if prior.get("awaiting") in ["crop", "service", "horizon"]:
         logger.info(f"[Orchestrator] Bypassing Preflight (User is answering '{prior.get('awaiting')}' prompt)")
         preflight = {"is_agri": True, "is_handled": True}
         lang = prior.get("language", "mr")
@@ -794,42 +796,19 @@ async def orchestrate(
     if not extraction.get("symptom") and prior.get("symptom"):
         extraction["symptom"] = prior.get("symptom")
 
-    if extraction.get("needs_clarification"):
-        aspect = extraction.get("clarification_aspect", "service")
-        clarification_msgs = CLARIFICATION_MESSAGES.get(
-            aspect, CLARIFICATION_MESSAGES["service"]
-        )
-        reply = clarification_msgs.get(lang, clarification_msgs["mr"])
-        # ── NEW (Fix 13): save whatever we DID extract instead of
-        # discarding it — otherwise a pest mentioned alongside a missing
-        # crop was lost the moment we asked for clarification.
-        session_store.update_session_data(
-            session_id,
-            crop=extraction.get("crop"),
-            pest=extraction.get("pest"),
-            symptom=extraction.get("symptom"),
-            category_intent=extraction.get("category_intent"),
-            language=lang,
-            awaiting=aspect, # <--- CHANGE 2: TAG MEMORY
-        )
-        return {
-            "status": "needs_clarification",
-            "service_type": None,
-            "reply_message": reply,
-            "session_updated": True,
-            "detected_language": lang,
-            "crop": None, "qty": None,
-            "needs_location": False,
-        }
 
     # ── Stage 3: Routing ────────────────────────────────────────────────────
-    routing = await _route_to_endpoint(extraction, message)
-    service_type = routing.get("service_type")
-    logger.info(
-        f"[Orchestrator] Routing → {service_type} "
-        f"(confidence: {routing.get('confidence')})"
-    )
-
+    # 🚀 MEMORY FIX: Bypass LLM routing if we are just answering a crop or horizon question
+    if prior.get("awaiting") in ["crop", "horizon"] and prior.get("service_type"):
+        service_type = prior.get("service_type")
+        logger.info(f"[Orchestrator] Bypassing Routing, reusing locked service_type: {service_type}")
+    else:
+        routing = await _route_to_endpoint(extraction, message)
+        service_type = routing.get("service_type")
+        logger.info(
+            f"[Orchestrator] Routing → {service_type} "
+            f"(confidence: {routing.get('confidence')})"
+        )
     if not service_type:
         reply = CLARIFICATION_MESSAGES["service"].get(
             lang, CLARIFICATION_MESSAGES["service"]["mr"]
@@ -981,6 +960,10 @@ async def orchestrate(
         needs_location = True
         # Skip horizon ask if extraction already found harvest_date
         needs_horizon = not bool(extraction.get("harvest_date"))
+        
+        # 🚀 ADD THIS: Save the state so we know what the next message means!
+        if needs_horizon:
+            session_store.update_session_data(session_id, awaiting="horizon")
         ack = {
             "mr": (
                 f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n"
