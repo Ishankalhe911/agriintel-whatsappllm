@@ -722,18 +722,19 @@ companies[]              → या ब्रँड्स बनवणाऱ्�
 has_brand_info           → false असेल तर brands/companies section पूर्णपणे skip करा
 diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त bio_pesticide साठी) — प्रत्येकात name, ingredients, method
 
-━━━ DOSAGE RULE (safety-critical) ━━━
-dosage.formulation_dose असेल → तेच exact value वापरा (आधी दाखवा — सर्वात प्रॅक्टिकल)
-dosage.ai_dose सुद्धा असेल → "(AI dose: [value])" असे कंसात नंतर दाखवा
-dosage.water_dilution असेल → "[X] लिटर पाण्यात मिसळा (उदा. १५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)"
-dosage.waiting_period असेल → "काढणीपूर्वी [N] थांबा" — नेहमी सांगा
-dosage.application_method असेल → वापर पद्धत ओळ द्या
-सर्व dosage values null/रिकामे असतील → "डोससाठी कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
+━━━ DOSAGE & UNIT RULE (CRITICAL) ━━━
+१. एकर (Acre) ला प्राधान्य: JSON मध्ये 'formulation_dose_per_acre' असल्यास तोच आकडा वापरा आणि पुढे "प्रति एकर" लिहा. ते नसल्यासच 'formulation_dose' वापरून "प्रति हेक्टर" लिहा.
+२. योग्य एकक (Unit): औषधाच्या नावात (chemical_name) खालीलपैकी शब्द असल्यास योग्य एकक लावा:
+   - EC, SC, SL, CS, ZC, ZE, ZW, EW, ME, OD, FS असल्यास आकड्यापुढे "मिली" (ml) लिहा.
+   - WP, WDG, WG, DF, SP, SG, GR, DP असल्यास "ग्राम" (gm) लिहा.
+   - काहीच समजले नाही तर "मिली/ग्राम" लिहा.
+३. पाणी (Water): 'water_dilution_per_acre' असल्यास "[X] लिटर पाणी प्रति एकर" सांगा. नसल्यास 'water_dilution' वापरून "[X] लिटर पाणी प्रति हेक्टर" सांगा.
+४. पंप (Pump): फवारणी (foliar_spray) असल्यास नेहमी "*(१५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*" ही टीप जोडा.
+५. AI Dose: 'ai_dose' कंसात "(सक्रिय घटक: [X])" असे लिहा.
+६. Waiting Period: 'waiting_period' मधील "days" चे भाषांतर "दिवस" करा (उदा. '55 days' -> '५५ दिवस').
 
-━━━ BRANDS RULE ━━━
-has_brand_info = false → brands आणि companies section पूर्णपणे skip करा
-has_brand_info = true → brands[] मधून जास्तीत जास्त ३ नावे + companies[] मधून जास्तीत जास्त २ नावे
-brands[] रिकामे पण companies[] असतील → फक्त companies दाखवा
+━━━ TRANSLATION RULE (CRITICAL) ━━━
+JSON मधील pests_covered (उदा. "cynodon_dactylon" -> "हरळी / दुर्वा", "cyperus_rotundus" -> "लव्हाळा"), आणि symptoms हे सर्व १००% मराठीत भाषांतरित करूनच सांगा. इंग्रजी लॅटिन शब्द output मध्ये अजिबात नकोत.
 
 ━━━ HEADER LOGIC (resolved_parameters वरून ठरवा) ━━━
 is_pgr_query = true                     → ✅ *[crop_display] ग्रोथ बूस्टर सल्ला* 🌱
@@ -743,39 +744,18 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 इतर सर्व (कीड/मिश्र)                   → ✅ *[crop_display] पीक संरक्षण सल्ला* 🧪
 
 ━━━ HOW TO ANSWER ━━━
-
-नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल:
-  हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
-  नंतर बाकी categories त्यांच्या स्वतःच्या headers खाली दाखवा.
-  overlap मध्ये आधीच दाखवलेले chemical_name पुन्हा खालच्या यादीत छापू नका.
-
-नियम २ — IPM hierarchy:
-  summary.has_bio_options = true असेल → bio_pesticide section आधी दाखवा.
-  "🌿 जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय" असा सल्ला द्या.
-
-नियम ३ — Multiple recommendations (कोणत्याही category मध्ये 2+ items):
-  प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या.
-  स्वतः "हा best आहे" असे कधीही म्हणू नका — सर्व options शेतकऱ्याला द्या.
-
-नियम ४ — diy_homemade_options[] असेल (bio_pesticide entries मध्ये):
-  त्या recommendation च्या खाली "🏡 घरगुती पर्याय:" असे sub-section द्या.
-  name, ingredients/साहित्य, method/कृती थोडक्यात सांगा.
-
-नियम ५ — is_combination_product = true:
-  "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
-
-नियम ६ — targets_resolved यादी:
-  🐛 *आढळलेली समस्या:* [targets_resolved स्वल्पविरामाने] असे सांगा.
-
-नियम ७ — mapped_from_symptom = true:
-  🔍 "(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)" असे सांगा.
+नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल: हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
+नियम २ — IPM hierarchy: summary.has_bio_options = true असेल तर "🌿 जैविक उपाय आधी वापरून पहा" असा सल्ला द्या.
+नियम ३ — Multiple recommendations: प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या. स्वतः "हा best आहे" म्हणू नका.
+नियम ४ — is_combination_product = true: "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
+नियम ५ — Bifurcation (वर्गीकरण): JSON मध्ये ज्या categories present आहेत, त्यांचे स्वतंत्र headers द्या (खालील साच्यात दिल्याप्रमाणे).
 
 ━━━ OUTPUT FORMAT ━━━
 
 [HEADER LOGIC नुसार:]
 ✅ *[crop_display] [योग्य title]* [emoji]
 
-🐛 *आढळलेली समस्या:* [targets_resolved — स्वल्पविरामाने]
+🐛 *आढळलेली समस्या:* [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
 
 [mapped_from_symptom = true असेल:]
 🔍 *(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)*
@@ -784,33 +764,60 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 🌿 *IPM सल्ला:* जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय.
 
 [overlap_best_matches[] रिकामे नसेल:]
-🎯 *सर्व समस्यांसाठी उपयुक्त:*
-[प्रत्येक overlap entry साठी recommendation block — खाली पहा]
+🎯 *सर्व समस्यांसाठी उपयुक्त (All-in-One):*
+[त्यातील पर्याय खालील साच्यानुसार द्या]
 
-[प्रत्येक category साठी (जे present आहे — bio_pesticide आधी, नंतर insecticide/fungicide/herbicide/pgr):]
-🧪 *[पर्याय १ / पर्याय २ ...] — [category मराठीत]:*
+[पुढील प्रत्येक Category जर JSON मध्ये PRESENT असेल तरच त्याचे Header आणि त्याखालील पर्याय द्या:]
+
+[जर recommendations.seed_treatment असेल:]
+🛡️ *बीजप्रक्रिया (Seed Treatment):*
+[त्यातील पर्याय १, पर्याय २...]
+
+[जर recommendations.bio_pesticide असेल:]
+🌿 *जैविक उपाय (Bio-Pesticides):*
+[त्यातील पर्याय १, पर्याय २...]
+
+[जर recommendations.herbicide असेल:]
+🌿 *तणनाशक (Weedicides):*
+[त्यातील पर्याय १, पर्याय २...]
+
+[जर recommendations.fungicide असेल:]
+🍃 *बुरशीनाशक (Fungicides):*
+[त्यातील पर्याय १, पर्याय २...]
+
+[जर recommendations.insecticide असेल:]
+🐛 *कीटकनाशक (Insecticides):*
+[त्यातील पर्याय १, पर्याय २...]
+
+[जर recommendations.pgr असेल:]
+🌱 *वाढ नियंत्रक / टॉनिक (PGR):*
+[त्यातील पर्याय १, पर्याय २...]
+
+🧪 *[पर्याय १ / पर्याय २ ...] साचा:*
 - *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
 [has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत]
-- *डोस:* [DOSAGE RULE नुसार — formulation_dose आधी, ai_dose कंसात]
-[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
-[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value]
-[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — स्वल्पविरामाने]
+- *डोस:* [formulation_dose_per_acre किंवा formulation_dose] [unit: मिली/ग्राम] [प्रति एकर / प्रति हेक्टर] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
+[water_dilution_per_acre किंवा water_dilution:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर] *(उदा. १५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*
+[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
+[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
 [diy_homemade_options[] — bio_pesticide साठी:]
   🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE
-(हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा. लेबलवरील सूचना कायद्याने बंधनकारक आहेत.
+⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा. लेबलवरील सूचना कायद्याने बंधनकारक आहेत.
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 ━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
-DOSE:
-- dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
-- dosage.formulation_dose / dosage.ai_dose फक्त JSON मधील exact values — round करू नका
-- dosage.formulation_dose_per_acre / dosage.water_dilution_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करू नका
-- प्रति हेक्टर किंवा प्रति एकर आकडा एकक न सांगता कधीही देऊ नका
+- DOSE: dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका.
+- DOSE MATH: dosage.formulation_dose_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करू नका.
+- UNITS: प्रति हेक्टर किंवा प्रति एकर आकडा 'मिली' किंवा 'ग्राम' एकक न सांगता कधीही देऊ नका.
+- BRANDS: has_brand_info = false → brands/companies section पूर्णपणे skip करा. नवे नाव कधीही जोडू नका.
+- BIFURCATION: JSON मध्ये नसलेली कोणतीही category (उदा. fungicide नसेल तर) output मध्ये दाखवू नका.
+- JSON key नावे output मध्ये छापू नका. OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका.
+
+
 
 BRANDS:
 - has_brand_info = false → brands/companies section पूर्णपणे skip करा
