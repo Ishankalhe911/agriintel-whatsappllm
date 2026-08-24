@@ -27,6 +27,12 @@ Fixes applied:
      If pest/symptom missing, farmer is asked to either type the pest OR
      explicitly say "no" to get PGR/growth-booster advice instead. No more
      silent PGR fallback, no more lost pest data across messages.
+  ✅ Fix 17 (NEW): Sowing-intent detection — "tur perat ahe" style messages
+     now route to a SEED_TREATMENT bypass (seed-dresser chemicals only),
+     completely separate from the pest_confirmation flow. Sowing intent is
+     never treated as "no pest mentioned" — it's checked and handled BEFORE
+     the pest_confirmation branch, so a farmer who's sowing never gets
+     asked "what pest do you see" and never falls through to PGR.
 """
 
 import json
@@ -191,6 +197,7 @@ async def _extract_intent(message: str) -> dict:
     """
     Extracts ALL structured fields from the farmer message.
     Fix 4: Added pest, symptom, category_intent for fertilizer endpoint.
+    Fix 17: Added sowing_intent for the seed-treatment bypass.
     """
     client = _get_client()
 
@@ -219,6 +226,11 @@ Rules:
    - If user asks about Mandi prices or Crop Disease/Protection, but crop=null → needs_clarification=true, clarification_aspect="crop"
    - If specific crop IS present, but pest/symptom is missing → needs_clarification=false (Stage 3 will handle pest confirmation)
    - Weather queries do NOT need clarification for null crop.
+10. sowing_intent: true ONLY if the farmer is talking about sowing/planting NOW or SOON —
+    NOT a pest/disease problem. Examples: "tur perat ahe", "cotton peryachi ahe",
+    "बियाणे लावायचे आहे", "sowing karaychi ahe", "soybean lavaycha aahe".
+    ⚠️ If the farmer mentions ANY pest, disease, or symptom, sowing_intent MUST be false —
+    pest/disease always takes priority over sowing_intent.
 
 Return JSON only:
 {{
@@ -234,6 +246,7 @@ Return JSON only:
   "pest": null,
   "symptom": null,
   "category_intent": null,
+  "sowing_intent": false,
   "language": "mr",
   "raw_intent": "one line summary in English",
   "needs_clarification": false,
@@ -248,6 +261,8 @@ Examples:
 "paus yeil ka" → crop=null, raw_intent="weather forecast", needs_clarification=false
 "cotton la pane pivali padtat" → crop="cotton", symptom="leaves turning yellow", needs_clarification=false
 "tomato la blight zala" → crop="tomato", pest=["blight"], needs_clarification=false
+"mi tur perat ahe" → crop="pigeonpea", sowing_intent=true, category_intent="SEED_TREATMENT", pest=null, symptom=null, needs_clarification=false, raw_intent="sowing/seed-treatment query"
+"soybean peryachi ahe pudhchya aathvdyat" → crop="soybean", sowing_intent=true, category_intent="SEED_TREATMENT", needs_clarification=false
 "hi" → needs_clarification=true, clarification_aspect="service" """
 
     try:
@@ -268,6 +283,7 @@ Examples:
             "variety": None, "radius_km": None, "time_horizon": "now",
             "harvest_date": None, "sowing_date": None, "forecast_days": 7,
             "pest": None, "symptom": None, "category_intent": None,
+            "sowing_intent": False,
             "language": "mr", "raw_intent": "unknown",
             "needs_clarification": True, "clarification_aspect": "service",
         }
@@ -399,6 +415,9 @@ CHEMICAL / FERTILIZER ADVICE:
 - Bio-pesticide options
 - CIBRC-approved chemicals for a crop-pest combination
 
+SOWING-TIME SEED TREATMENT (also routes here):
+- Farmer says they are about to sow/plant a crop — needs seed-dresser advice
+
 SYMPTOM-BASED DIAGNOSIS:
 - Farmer describes visible symptoms (yellow leaves, wilting, holes in leaves)
   and needs to know what pest/disease it is AND what to do
@@ -417,10 +436,12 @@ DISAMBIGUATION — CROP PROTECTION vs WEATHER:
 - "rog येण्याची शक्यता" → WEATHER (disease risk forecast)
 
 MARATHI: कीड, रोग, बुरशी, मावा, खोडकिडा, करपा, भुरी, तुडतुडे, फुलकिडे,
-         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment)
-HINDI: कीट, रोग, फफूंद, माहू, कीटनाशक, फफूंदनाशक, दवाई
+         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment),
+         पेरणी, लावणी, बीजप्रक्रिया (for sowing/seed-treatment)
+HINDI: कीट, रोग, फफूंद, माहू, कीटनाशक, फफूंदनाशक, दवाई, बुवाई, बीज उपचार
 ENGLISH: pest, disease, fungus, aphid, stem borer, blight, chemical,
-         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment)
+         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment),
+         sowing, seed treatment
 
 EXAMPLES:
 "soybean la stem borer zala, kay maru?" → CROP PROTECTION
@@ -430,6 +451,7 @@ EXAMPLES:
 "burshinashak sanga soybean sathi" → CROP PROTECTION
 "onion la purple blotch, dose kiti?" → CROP PROTECTION
 "grape la powdery mildew, Amistar chalel ka?" → CROP PROTECTION
+"mi tur perat ahe" → CROP PROTECTION (sowing/seed-treatment)
 """,
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -439,11 +461,11 @@ EXAMPLES:
             "pest": types.Schema(
                 type=types.Type.ARRAY,
                 items=types.Schema(type=types.Type.STRING),
-                description="List of pest/disease names e.g. ['stem_borer', 'aphid']. Empty if symptom-only."),
+                description="List of pest/disease names e.g. ['stem_borer', 'aphid']. Empty if symptom-only or sowing-intent."),
             "symptom": types.Schema(type=types.Type.STRING,
                 description="Visible symptom description if exact pest unknown e.g. 'leaves turning yellow'"),
             "category_intent": types.Schema(type=types.Type.STRING,
-                description="Specific chemical category if farmer asked: 'fungicide'/'insecticide'/'herbicide'/'PGR'"),
+                description="Specific chemical category if farmer asked: 'fungicide'/'insecticide'/'herbicide'/'PGR'/'SEED_TREATMENT'"),
         },
         required=["crop"],
     ),
@@ -469,12 +491,14 @@ Extracted:
 - Pest identified: {extraction.get('pest', 'none')}
 - Symptom described: {extraction.get('symptom', 'none')}
 - Chemical category: {extraction.get('category_intent', 'none')}
+- Sowing intent: {extraction.get('sowing_intent', False)}
 - Intent: {extraction.get('raw_intent', 'unknown')}
 
 Call the correct tool. Key rules:
 - spray/फवारणी safety → WEATHER always
 - pest/disease TREATMENT or chemical needed → CROP PROTECTION
 - pest/disease RISK WINDOW forecast → WEATHER
+- sowing intent (about to sow/plant) → CROP PROTECTION (seed treatment)
 - price/sell/profit/mandi → MANDI"""
 
     try:
@@ -622,6 +646,14 @@ NOT_AGRI_MESSAGES = {
     "en": "Sorry, we only help with farming topics — mandi prices, weather and crop protection.",
 }
 
+# ── NEW (Fix 17): ack shown when sowing intent routes straight to
+# seed-treatment advice — no pest_confirmation question asked at all.
+SEED_TREATMENT_ACK = {
+    "mr": "✅ *{crop} बीजप्रक्रिया सल्ला* 🌱\n\n💳 पेमेंट करा आणि पेरणीच्या वेळी वापरायचे औषध मिळवा.",
+    "hi": "✅ *{crop} बीज उपचार सलाह* 🌱\n\n💳 पेमेंट करें और बुवाई के समय इस्तेमाल होने वाली दवा पाएं।",
+    "en": "✅ *{crop} Seed Treatment Advice* 🌱\n\n💳 Pay to get the sowing-time seed treatment recommendation.",
+}
+
 
 # ─── Main Orchestrator ────────────────────────────────────────────────────────
 
@@ -765,6 +797,7 @@ async def orchestrate(
     logger.info(
         f"[Orchestrator] Extraction: crop={extraction.get('crop')}, "
         f"qty={extraction.get('qty')}, pest={extraction.get('pest')}, "
+        f"sowing_intent={extraction.get('sowing_intent')}, "
         f"lang={lang}, intent={extraction.get('raw_intent')}"
     )
 
@@ -852,6 +885,36 @@ async def orchestrate(
             "qty": extraction.get("qty"),          # <-- ADDED THIS
             "needs_location": False,
             "needs_horizon": False,
+        }
+
+    # ── NEW (Fix 17): Sowing-intent bypass — MUST be checked before the
+    # normal fertilizer "pest_mentioned" block below. A farmer who is
+    # sowing has no pest to report yet, so this is a completely separate
+    # branch from pest_confirmation — it never asks "what pest do you see"
+    # and never falls through to the PGR/growth-booster path either.
+    # extraction["sowing_intent"] is only ever true when Stage 2 found no
+    # pest/disease/symptom in the message (see extraction prompt rule 10),
+    # so this check is safe to put ahead of the pest_mentioned check.
+    if service_type == "fertilizer" and extraction.get("sowing_intent"):
+        session_store.update_session_data(
+            session_id,
+            service_type="fertilizer",
+            crop=crop,
+            pest=None,
+            symptom=None,
+            category_intent="SEED_TREATMENT",
+            language=lang,
+            awaiting=None,
+        )
+        ack_text = SEED_TREATMENT_ACK.get(lang, SEED_TREATMENT_ACK["mr"]).format(
+            crop=crop.title() if crop else ("पीक" if lang == "mr" else "Crop")
+        )
+        return {
+            "status": "routed", "service_type": "fertilizer",
+            "reply_message": ack_text,
+            "session_updated": True, "detected_language": lang,
+            "crop": crop, "qty": None,
+            "needs_location": False, "needs_horizon": False,
         }
 
     # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
