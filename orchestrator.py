@@ -779,15 +779,28 @@ async def orchestrate(
 
     # ── Stage 2: Extraction ─────────────────────────────────────────────────
     extraction = await _extract_intent(message)
+    
+    # 🚀 MULTI-CROP UX FIX: Protect the database, but warn the farmer!
     raw_crop = extraction.get("crop")
+    multi_crop_warning = {"mr": "", "hi": "", "en": ""}
+    
     if isinstance(raw_crop, list):
-       extraction["crop"] = raw_crop[0] if raw_crop else None
+        extraction["crop"] = raw_crop[0] if raw_crop else None
+        if len(raw_crop) > 1:
+            multi_crop_warning = {
+                "mr": "\n💡 *(टीप: एका वेळी एकाच पिकाची माहिती मिळते. दुसऱ्या पिकासाठी नवीन मेसेज पाठवा.)*",
+                "hi": "\n💡 *(नोट: एक बार में एक ही फसल की जानकारी मिलती है। दूसरी फसल के लिए नया मेसेज भेजें।)*",
+                "en": "\n💡 *(Note: We process one crop at a time. Please send a new message for the second crop.)*"
+            }
+
     lang = extraction.get("language", "mr")
     logger.info(
         f"[Orchestrator] Extraction: crop={extraction.get('crop')}, "
         f"qty={extraction.get('qty')}, pest={extraction.get('pest')}, "
         f"lang={lang}, intent={extraction.get('raw_intent')}"
     )
+
+    # ── NEW (Fix 13): merge in whatever the prior turn already knew...
 
     # ── NEW (Fix 13): merge in whatever the prior turn already knew, so a
     # crop given two messages ago (or a pest given last message) isn't lost
@@ -924,9 +937,9 @@ async def orchestrate(
         needs_horizon = False
         needs_location = True
         ack = {
-            "mr": f"✅ *{crop.title() if crop else 'पीक'} मंडी भाव*\n\n📍 आता तुमचे स्थान शेअर करा.",
-            "hi": f"✅ *{crop.title() if crop else 'फसल'} मंडी भाव*\n\n📍 अब अपना स्थान शेयर करें।",
-            "en": f"✅ *{crop.title() if crop else 'Crop'} Mandi Prices*\n\n📍 Please share your location.",
+            "mr": f"✅ *{crop.title() if crop else 'पीक'} मंडी भाव*{multi_crop_warning.get(lang, '')}\n\n📍 आता तुमचे स्थान शेअर करा.",
+            "hi": f"✅ *{crop.title() if crop else 'फसल'} मंडी भाव*{multi_crop_warning.get(lang, '')}\n\n📍 अब अपना स्थान शेयर करें।",
+            "en": f"✅ *{crop.title() if crop else 'Crop'} Mandi Prices*{multi_crop_warning.get(lang, '')}\n\n📍 Please share your location.",
         }
 
     elif service_type == "fertilizer":
@@ -943,17 +956,17 @@ async def orchestrate(
 
         ack = {
             "mr": (
-                f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*\n\n"
+                f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*{multi_crop_warning.get(lang, '')}\n\n"
                 f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 पेमेंट करा आणि CIBRC-approved रासायनिक सल्ला मिळवा."
             ),
             "hi": (
-                f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*\n\n"
+                f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*{multi_crop_warning.get(lang, '')}\n\n"
                 f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 पेमेंट करें और CIBRC-approved रासायनिक सलाह पाएं।"
             ),
             "en": (
-                f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*\n\n"
+                f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*{multi_crop_warning.get(lang, '')}\n\n"
                 f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 Pay to get CIBRC-approved chemical recommendations."
             ),
@@ -969,22 +982,22 @@ async def orchestrate(
             session_store.update_session_data(session_id, awaiting="horizon")
         ack = {
             "mr": (
-                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n"
+                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*{multi_crop_warning.get(lang, '')}\n\n"
                 f"तुम्हाला किती दिवसांचा अंदाज हवा आहे? खाली निवडा 👇"
                 if needs_horizon else
-                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n📍 आता तुमचे स्थान शेअर करा."
+                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*{multi_crop_warning.get(lang, '')}\n\n📍 आता तुमचे स्थान शेअर करा."
             ),
             "hi": (
-                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n"
+                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*{multi_crop_warning.get(lang, '')}\n\n"
                 f"कितने दिनों का अनुमान चाहिए? नीचे चुनें 👇"
                 if needs_horizon else
-                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n📍 अब अपना स्थान शेयर करें।"
+                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*{multi_crop_warning.get(lang, '')}\n\n📍 अब अपना स्थान शेयर करें।"
             ),
             "en": (
-                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n"
+                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*{multi_crop_warning.get(lang, '')}\n\n"
                 f"How many days of forecast do you need? Choose below 👇"
                 if needs_horizon else
-                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n📍 Please share your location."
+                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*{multi_crop_warning.get(lang, '')}\n\n📍 Please share your location."
             ),
         }
 
