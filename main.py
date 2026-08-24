@@ -562,7 +562,8 @@ async def _handle_text_message(
                         return
 
                 # ── Geocode fallback (typed location, no horizon pending) ─
-                if session and not session.get("horizon_asked"):
+                # Guard: if farmer is answering a crop/pest/service question, don't geocode
+                if session and not session.get("horizon_asked") and session.get("awaiting") not in ("crop", "pest_confirmation", "service"):
                     coords = await _geocode_text_location(text)
                     if coords:
                         lat, lon = coords
