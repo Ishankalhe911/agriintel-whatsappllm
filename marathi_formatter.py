@@ -28,6 +28,10 @@ FIXES from previous version:
   ✅ max_output_tokens = 3000 (consistent — farmer paid, give full detail)
   ✅ temperature = 0.25 (tighter than 0.3 for factual JSON extraction)
   ✅ System prompt is rules-first for stronger instruction compliance
+  ✅ NEW: seed_treatment category (sowing-time seed dresser advice) now has
+    its own header, field meanings, and output block — completely separate
+    from PGR and from normal in-season pest/disease treatment, so a farmer
+    who is sowing never sees an in-season chemical or vice versa.
 """
 
 import json
@@ -559,6 +563,9 @@ resolved_parameters.crop_display    → शेतकऱ्याने लिह
 resolved_parameters.targets_resolved → कोणत्या कीड/रोगांसाठी शोध घेतला (list)
 resolved_parameters.mapped_from_symptom → true असेल तर लक्षणावरून कीड ओळखली गेली
 resolved_parameters.is_pgr_query    → true असेल तर हे ग्रोथ बूस्टर उत्तर आहे
+resolved_parameters.is_seed_treatment_query → true असेल तर हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे
+  ⚠️ is_pgr_query आणि is_seed_treatment_query कधीही एकत्र true नसतात — दोन्ही वेगळे,
+     एकमेकांशी संबंध नसलेले उत्तर-प्रकार आहेत.
 recommendations                     → हे एक OBJECT आहे, LIST नाही! खालील keys असू शकतात:
   .overlap_best_matches[]           → एकापेक्षा जास्त कीड/रोग असतील — सर्वांवर चालणारी औषधे
   .insecticide[]                    → कीटकनाशके
@@ -566,6 +573,7 @@ recommendations                     → हे एक OBJECT आहे, LIST न
   .fungicide[]                      → बुरशीनाशके
   .herbicide[]                      → तणनाशके
   .pgr[]                            → वाढ नियंत्रक (is_pgr_query=true असताना)
+  .seed_treatment[]                 → बीजप्रक्रिया / पेरणी-वेळचे औषध (is_seed_treatment_query=true असताना)
   (JSON मध्ये जी key PRESENT आहे तीच सांगा — रिकामी key पूर्णपणे skip करा)
 summary.total_options               → एकूण किती पर्याय सापडले
 summary.has_bio_options             → जैविक पर्याय उपलब्ध आहे का
@@ -574,14 +582,16 @@ summary.has_branded_options         → बाजारातील ब्रँ
 ━━━ FIELD MEANINGS — प्रत्येक recommendation entry च्या आत ━━━
 chemical_name            → रासायनिक घटकाचे शास्त्रीय/CIBRC नाव (हेच खरे नाव — बाटलीवर तपासा)
 category                 → insecticide=कीडनाशक | fungicide=बुरशीनाशक |
-                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक
+                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक |
+                            seed_treatment=बीजप्रक्रिया (पेरणीच्या वेळी बियाण्यास लावायचे)
 is_combination_product   → true असेल तर हे दोन घटकांचे मिश्रण आहे — तसे नमूद करा
 covers_all_pests         → true असेल तर सर्व कीड/रोगांवर हे एकच औषध चालते
-pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे
+pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे (seed_treatment साठी सहसा रिकामे — skip करा)
 dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
 dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
 dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
 dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
+                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा
 dosage.application_method → फवारणी/मातीत/बियाण्यावर — कशा प्रकारे वापरायचे
 brands[]                 → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
 companies[]              → या ब्रँड्स बनवणाऱ्या कंपन्या
@@ -601,7 +611,8 @@ has_brand_info = false → brands आणि companies section पूर्णप
 has_brand_info = true → brands[] मधून जास्तीत जास्त ३ नावे + companies[] मधून जास्तीत जास्त २ नावे
 brands[] रिकामे पण companies[] असतील → फक्त companies दाखवा
 
-━━━ HEADER LOGIC (resolved_parameters वरून ठरवा) ━━━
+━━━ HEADER LOGIC (resolved_parameters वरून ठरवा — याच क्रमाने तपासा) ━━━
+is_seed_treatment_query = true          → ✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱  (सर्वात आधी तपासा)
 is_pgr_query = true                     → ✅ *[crop_display] ग्रोथ बूस्टर सल्ला* 🌱
 mapped_from_symptom = true              → ✅ *[crop_display] लक्षणावरून ओळखलेली समस्या* 🔍
 recommendations मध्ये फक्त fungicide[]  → ✅ *[crop_display] रोग व्यवस्थापन सल्ला* 🍃
@@ -610,18 +621,27 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 
 ━━━ HOW TO ANSWER ━━━
 
-नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल:
+नियम ० — is_seed_treatment_query = true असेल (SPECIAL — बाकी सर्व नियम इथे थांबतात):
+  हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे — शेतात सध्या कोणतीही कीड/रोग नाही, फक्त
+  पेरणीपूर्वी बियाण्यास लावायचे औषध आहे.
+  🎯 सर्व समस्यांसाठी उपयुक्त / IPM जैविक-आधी सल्ला / pests_covered — यातले काहीही दाखवू नका
+  (हे सर्व in-season pest-treatment साठी आहे, seed treatment साठी लागू होत नाही).
+  targets_resolved मध्ये "Seed Treatment" असेल तरी 🐛 "आढळलेली समस्या" line दाखवू नका —
+  त्याऐवजी थेट खाली दिलेला विशेष header + recommendations.seed_treatment[] दाखवा.
+
+नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल (is_seed_treatment_query=false असतानाच लागू):
   हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
   नंतर बाकी categories त्यांच्या स्वतःच्या headers खाली दाखवा.
   overlap मध्ये आधीच दाखवलेले chemical_name पुन्हा खालच्या यादीत छापू नका.
 
-नियम २ — IPM hierarchy:
+नियम २ — IPM hierarchy (is_seed_treatment_query=false असतानाच लागू):
   summary.has_bio_options = true असेल → bio_pesticide section आधी दाखवा.
   "🌿 जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय" असा सल्ला द्या.
 
 नियम ३ — Multiple recommendations (कोणत्याही category मध्ये 2+ items):
   प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या.
   स्वतः "हा best आहे" असे कधीही म्हणू नका — सर्व options शेतकऱ्याला द्या.
+  (seed_treatment साठीही हाच नियम लागू — एकापेक्षा जास्त seed-dresser असतील तर सर्व स्वतंत्र दाखवा.)
 
 नियम ४ — diy_homemade_options[] असेल (bio_pesticide entries मध्ये):
   त्या recommendation च्या खाली "🏡 घरगुती पर्याय:" असे sub-section द्या.
@@ -630,13 +650,30 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 नियम ५ — is_combination_product = true:
   "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
 
-नियम ६ — targets_resolved यादी:
+नियम ६ — targets_resolved यादी (is_seed_treatment_query=false असतानाच लागू):
   🐛 *आढळलेली समस्या:* [targets_resolved स्वल्पविरामाने] असे सांगा.
 
 नियम ७ — mapped_from_symptom = true:
   🔍 "(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)" असे सांगा.
 
-━━━ OUTPUT FORMAT ━━━
+━━━ OUTPUT FORMAT — SEED TREATMENT (is_seed_treatment_query = true असेल तेव्हा हाच वापरा) ━━━
+
+✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱
+
+🌱 *पेरणीपूर्वी बियाण्यास लावण्यासाठी:*
+
+[प्रत्येक recommendations.seed_treatment[] entry साठी — 2+ असतील तर *पर्याय १*, *पर्याय २*:]
+🧪 *[पर्याय १ / पर्याय २ ...]:*
+- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - *वापर पद्धत:* [मराठीत — उदा. बियाण्यास चोळून लावा]
+- *डोस:* [DOSAGE RULE नुसार]
+[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
+
+⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
+हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
+
+━━━ OUTPUT FORMAT — NORMAL PEST/PGR (is_seed_treatment_query = false असेल तेव्हा हाच वापरा) ━━━
 
 [HEADER LOGIC नुसार:]
 ✅ *[crop_display] [योग्य title]* [emoji]
@@ -682,12 +719,15 @@ BRANDS:
 - companies[] JSON मधील यादीतीलच — max २ दाखवा
 
 STRUCTURE:
-- recommendations OBJECT आहे — overlap_best_matches, insecticide, bio_pesticide इत्यादी sub-keys आहेत
+- recommendations OBJECT आहे — overlap_best_matches, insecticide, bio_pesticide, seed_treatment इत्यादी sub-keys आहेत
 - JSON मध्ये नसलेली कोणतीही category output मध्ये दाखवू नका
 - JSON key नावे (recommendations, dosage, chemical_name इ.) output मध्ये छापू नका
 - OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका — त्या जागी actual data भरा
 - overlap मध्ये दाखवलेले chemical पुन्हा category section मध्ये छापू नका
-- JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
+- JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा
+- is_seed_treatment_query = true असेल तर वरची SEED TREATMENT OUTPUT FORMAT template वापरा —
+  NORMAL PEST/PGR template कधीही मिसळू नका (उदा. seed treatment output मध्ये कधीही PHI/waiting_period
+  किंवा pests_covered किंवा IPM/overlap section दाखवू नका)"""
 
     return await _call_gemini(prompt)
 
