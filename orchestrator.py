@@ -779,6 +779,9 @@ async def orchestrate(
 
     # ── Stage 2: Extraction ─────────────────────────────────────────────────
     extraction = await _extract_intent(message)
+    raw_crop = extraction.get("crop")
+    if isinstance(raw_crop, list):
+       extraction["crop"] = raw_crop[0] if raw_crop else None
     lang = extraction.get("language", "mr")
     logger.info(
         f"[Orchestrator] Extraction: crop={extraction.get('crop')}, "
