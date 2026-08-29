@@ -27,6 +27,12 @@ Fixes applied:
      If pest/symptom missing, farmer is asked to either type the pest OR
      explicitly say "no" to get PGR/growth-booster advice instead. No more
      silent PGR fallback, no more lost pest data across messages.
+  ✅ Fix 17 (NEW): Sowing-intent detection — "tur perat ahe" style messages
+     now route to a SEED_TREATMENT bypass (seed-dresser chemicals only),
+     completely separate from the pest_confirmation flow. Sowing intent is
+     never treated as "no pest mentioned" — it's checked and handled BEFORE
+     the pest_confirmation branch, so a farmer who's sowing never gets
+     asked "what pest do you see" and never falls through to PGR.
 """
 
 import json
@@ -191,6 +197,7 @@ async def _extract_intent(message: str) -> dict:
     """
     Extracts ALL structured fields from the farmer message.
     Fix 4: Added pest, symptom, category_intent for fertilizer endpoint.
+    Fix 17: Added sowing_intent for the seed-treatment bypass.
     """
     client = _get_client()
 
@@ -215,7 +222,15 @@ Rules:
    - ⚠️ CRITICAL: Must be a specific PHYSICAL/VISUAL symptom (e.g. "leaves turning yellow", "holes in leaves", "white spots"). 
    - Generic complaint words like "kharab zhala", "खराब झाले", "rog aala", "रोग आला", "nuksan", "problem aahe" are NOT symptoms. Set symptom=null for generic complaints.
 8. category_intent: if farmer asks for a specific chemical category. "बुरशीनाशक सांगा"→"fungicide", "तणनाशक"→"herbicide", "खत"→"fertilizer", "growth booster"→"PGR"
-
+9. needs_clarification:
+   - If user asks about Mandi prices or Crop Disease/Protection, but crop=null → needs_clarification=true, clarification_aspect="crop"
+   - If specific crop IS present, but pest/symptom is missing → needs_clarification=false (Stage 3 will handle pest confirmation)
+   - Weather queries do NOT need clarification for null crop.
+10. sowing_intent: true ONLY if the farmer is talking about sowing/planting NOW or SOON —
+    NOT a pest/disease problem. Examples: "tur perat ahe", "cotton peryachi ahe",
+    "बियाणे लावायचे आहे", "sowing karaychi ahe", "soybean lavaycha aahe".
+    ⚠️ If the farmer mentions ANY pest, disease, or symptom, sowing_intent MUST be false —
+    pest/disease always takes priority over sowing_intent.
 
 Return JSON only:
 {{
@@ -231,9 +246,11 @@ Return JSON only:
   "pest": null,
   "symptom": null,
   "category_intent": null,
+  "sowing_intent": false,
   "language": "mr",
   "raw_intent": "one line summary in English",
-
+  "needs_clarification": false,
+  "clarification_aspect": null
 }}
 
 Examples:
@@ -244,6 +261,8 @@ Examples:
 "paus yeil ka" → crop=null, raw_intent="weather forecast", needs_clarification=false
 "cotton la pane pivali padtat" → crop="cotton", symptom="leaves turning yellow", needs_clarification=false
 "tomato la blight zala" → crop="tomato", pest=["blight"], needs_clarification=false
+"mi tur perat ahe" → crop="pigeonpea", sowing_intent=true, category_intent="SEED_TREATMENT", pest=null, symptom=null, needs_clarification=false, raw_intent="sowing/seed-treatment query"
+"soybean peryachi ahe pudhchya aathvdyat" → crop="soybean", sowing_intent=true, category_intent="SEED_TREATMENT", needs_clarification=false
 "hi" → needs_clarification=true, clarification_aspect="service" """
 
     try:
@@ -264,8 +283,9 @@ Examples:
             "variety": None, "radius_km": None, "time_horizon": "now",
             "harvest_date": None, "sowing_date": None, "forecast_days": 7,
             "pest": None, "symptom": None, "category_intent": None,
+            "sowing_intent": False,
             "language": "mr", "raw_intent": "unknown",
-            
+            "needs_clarification": True, "clarification_aspect": "service",
         }
 
 
@@ -324,8 +344,7 @@ WEATHER / RAIN:
 - Will it rain? Rain forecast next N days
 - Drought risk, water stress, season-to-date rainfall vs normal
 
-FARMING OPERATIONS (TIMING):
-- WHEN to spray chemicals or apply fertilizer (खत/युरिया कधी देऊ?)
+FARMING OPERATIONS:
 - Spray safety today? (Delta-T: 2-8°C optimal, wind <15kmh, rain <2mm)
 - Drone spray window safety check
 - Irrigation advice based on net water balance (rain - ET0)
@@ -341,30 +360,26 @@ SEASONAL (requires harvest_date):
 - ECMWF sub-seasonal weeks 3-4 outlook
 - NASA POWER 30yr climatology adjusted by ENSO/IOD phase
 
-CRITICAL RULE — TIMING IS ALWAYS WEATHER:
-फवारणी/spray/drone spray/खत देण्याची वेळ → ALWAYS WEATHER even if crop mentioned
+CRITICAL RULE — SPRAY IS ALWAYS WEATHER:
+फवारणी/spray/drone spray → ALWAYS WEATHER even if crop mentioned
 
 DISAMBIGUATION — WEATHER vs CROP PROTECTION:
 - "rog aahe, chemical sanga" → CROP PROTECTION (specific chemical needed)
 - "rog yeण्याची शक्यता आहे ka" → WEATHER (disease risk window)
 - "stem borer zala, kay maru" → CROP PROTECTION (treatment needed)
 - "keed yeण्याचा धोका ahe ka" → WEATHER (pest risk window)
-- "खत कधी देऊ?" (When to fertilize) → WEATHER (Timing)
-- "कोणते खत वापरू?" (Which fertilizer to buy) → CROP PROTECTION (Product)
 
-MARATHI: पाऊस, हवामान, फवारणी, सिंचन, दुष्काळ, वारा, उष्णता, धोका, कधी, वेळ
-HINDI: बारिश, मौसम, सिंचाई, सूखा, हवा, कब, समय
-ENGLISH: rain, weather, spray, irrigation, drought, wind, forecast, when, timing
+MARATHI: पाऊस, हवामान, फवारणी, सिंचन, दुष्काळ, वारा, उष्णता, धोका
+HINDI: बारिश, मौसम, सिंचाई, सूखा, हवा
+ENGLISH: rain, weather, spray, irrigation, drought, wind, forecast
 
 EXAMPLES:
 "आज फवारणी करू का?" → WEATHER (spray = weather always)
-"युरिया कधी टाकू?" → WEATHER (timing of fertilizer = weather)
 "paus yeil ka pudhe 7 diwas?" → WEATHER
 "drone udvu ka aaj?" → WEATHER (drone = spray safety)
 "soybean la heat stress ahe ka?" → WEATHER
 "September madhe paus kaasa rahil?" → WEATHER (subseasonal)
 """,
-# ... keep the parameters exactly the same ...
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -400,6 +415,9 @@ CHEMICAL / FERTILIZER ADVICE:
 - Bio-pesticide options
 - CIBRC-approved chemicals for a crop-pest combination
 
+SOWING-TIME SEED TREATMENT (also routes here):
+- Farmer says they are about to sow/plant a crop — needs seed-dresser advice
+
 SYMPTOM-BASED DIAGNOSIS:
 - Farmer describes visible symptoms (yellow leaves, wilting, holes in leaves)
   and needs to know what pest/disease it is AND what to do
@@ -416,14 +434,14 @@ DISAMBIGUATION — CROP PROTECTION vs WEATHER:
 - "chemical sanga" → CROP PROTECTION ✅
 - "rog aahe" → CROP PROTECTION ✅ (disease present, needs treatment)
 - "rog येण्याची शक्यता" → WEATHER (disease risk forecast)
-- "कोणते खत टाकू?" (Which fertilizer) → CROP PROTECTION ✅
-- "खत कधी देऊ?" (When to fertilize) → WEATHER ❌ (Timing belongs to Weather)
 
 MARATHI: कीड, रोग, बुरशी, मावा, खोडकिडा, करपा, भुरी, तुडतुडे, फुलकिडे,
-         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment ONLY)
-HINDI: कीट, रोग, फफूंद, माहू, कीटनाशक, फफूंदनाशक, दवाई
+         कीटकनाशक, बुरशीनाशक, तणनाशक, खत, औषध, फवारणी (for treatment),
+         पेरणी, लावणी, बीजप्रक्रिया (for sowing/seed-treatment)
+HINDI: कीट, रोग, फफूंद, माहू, कीटनाशक, फफूंदनाशक, दवाई, बुवाई, बीज उपचार
 ENGLISH: pest, disease, fungus, aphid, stem borer, blight, chemical,
-         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment ONLY)
+         insecticide, fungicide, herbicide, dosage, brand, spray (for treatment),
+         sowing, seed treatment
 
 EXAMPLES:
 "soybean la stem borer zala, kay maru?" → CROP PROTECTION
@@ -433,6 +451,7 @@ EXAMPLES:
 "burshinashak sanga soybean sathi" → CROP PROTECTION
 "onion la purple blotch, dose kiti?" → CROP PROTECTION
 "grape la powdery mildew, Amistar chalel ka?" → CROP PROTECTION
+"mi tur perat ahe" → CROP PROTECTION (sowing/seed-treatment)
 """,
     parameters=types.Schema(
         type=types.Type.OBJECT,
@@ -442,11 +461,11 @@ EXAMPLES:
             "pest": types.Schema(
                 type=types.Type.ARRAY,
                 items=types.Schema(type=types.Type.STRING),
-                description="List of pest/disease names e.g. ['stem_borer', 'aphid']. Empty if symptom-only."),
+                description="List of pest/disease names e.g. ['stem_borer', 'aphid']. Empty if symptom-only or sowing-intent."),
             "symptom": types.Schema(type=types.Type.STRING,
                 description="Visible symptom description if exact pest unknown e.g. 'leaves turning yellow'"),
             "category_intent": types.Schema(type=types.Type.STRING,
-                description="Specific chemical category if farmer asked: 'fungicide'/'insecticide'/'herbicide'/'PGR'"),
+                description="Specific chemical category if farmer asked: 'fungicide'/'insecticide'/'herbicide'/'PGR'/'SEED_TREATMENT'"),
         },
         required=["crop"],
     ),
@@ -472,13 +491,14 @@ Extracted:
 - Pest identified: {extraction.get('pest', 'none')}
 - Symptom described: {extraction.get('symptom', 'none')}
 - Chemical category: {extraction.get('category_intent', 'none')}
+- Sowing intent: {extraction.get('sowing_intent', False)}
 - Intent: {extraction.get('raw_intent', 'unknown')}
 
 Call the correct tool. Key rules:
-- TIMING of operations (When to spray/fertilize/harvest/irrigate) → WEATHER
 - spray/फवारणी safety → WEATHER always
 - pest/disease TREATMENT or chemical needed → CROP PROTECTION
 - pest/disease RISK WINDOW forecast → WEATHER
+- sowing intent (about to sow/plant) → CROP PROTECTION (seed treatment)
 - price/sell/profit/mandi → MANDI"""
 
     try:
@@ -626,8 +646,14 @@ NOT_AGRI_MESSAGES = {
     "en": "Sorry, we only help with farming topics — mandi prices, weather and crop protection.",
 }
 
+# ── NEW (Fix 17): ack shown when sowing intent routes straight to
+# seed-treatment advice — no pest_confirmation question asked at all.
+SEED_TREATMENT_ACK = {
+    "mr": "✅ *{crop} बीजप्रक्रिया सल्ला* 🌱\n\n💳 पेमेंट करा आणि पेरणीच्या वेळी वापरायचे औषध मिळवा.",
+    "hi": "✅ *{crop} बीज उपचार सलाह* 🌱\n\n💳 पेमेंट करें और बुवाई के समय इस्तेमाल होने वाली दवा पाएं।",
+    "en": "✅ *{crop} Seed Treatment Advice* 🌱\n\n💳 Pay to get the sowing-time seed treatment recommendation.",
+}
 
-# ─── Main Orchestrator ────────────────────────────────────────────────────────
 
 # ─── Main Orchestrator ────────────────────────────────────────────────────────
 
@@ -718,22 +744,10 @@ async def orchestrate(
             }
 
     # ── Stage 1: Preflight ──────────────────────────────────────────────────
-    lang = "mr"  # Default until extraction detects language
-    # ── NEW: Horizon bypass (If we are waiting for the 15/30/60 days button) ──
-    if prior.get("awaiting") == "horizon":
-        logger.info(f"[Orchestrator] Bypassing extraction/routing (awaiting horizon)")
-        # Fall through to the bottom. The routing bypass (Fix B) will catch it 
-        # and lock the service_type="weather"
-        pass
+    preflight = await _preflight(message)
+    logger.info(f"[Orchestrator] Preflight: {preflight}")
 
-    # ── CHANGE 1: THE BYPASS: Skip Preflight if we are waiting for a crop or service ──
-    if prior.get("awaiting") in ["crop", "service", "horizon"]:
-        logger.info(f"[Orchestrator] Bypassing Preflight (User is answering '{prior.get('awaiting')}' prompt)")
-        preflight = {"is_agri": True, "is_handled": True}
-        lang = prior.get("language", "mr")
-    else:
-        preflight = await _preflight(message)
-        logger.info(f"[Orchestrator] Preflight: {preflight}")
+    lang = "mr"  # Default until extraction detects language
 
     if not preflight.get("is_agri"):
         return {
@@ -779,28 +793,13 @@ async def orchestrate(
 
     # ── Stage 2: Extraction ─────────────────────────────────────────────────
     extraction = await _extract_intent(message)
-    
-    # 🚀 MULTI-CROP UX FIX: Protect the database, but warn the farmer!
-    raw_crop = extraction.get("crop")
-    multi_crop_warning = {"mr": "", "hi": "", "en": ""}
-    
-    if isinstance(raw_crop, list):
-        extraction["crop"] = raw_crop[0] if raw_crop else None
-        if len(raw_crop) > 1:
-            multi_crop_warning = {
-                "mr": "\n💡 *(टीप: एका वेळी एकाच पिकाची माहिती मिळते. दुसऱ्या पिकासाठी नवीन मेसेज पाठवा.)*",
-                "hi": "\n💡 *(नोट: एक बार में एक ही फसल की जानकारी मिलती है। दूसरी फसल के लिए नया मेसेज भेजें।)*",
-                "en": "\n💡 *(Note: We process one crop at a time. Please send a new message for the second crop.)*"
-            }
-
     lang = extraction.get("language", "mr")
     logger.info(
         f"[Orchestrator] Extraction: crop={extraction.get('crop')}, "
         f"qty={extraction.get('qty')}, pest={extraction.get('pest')}, "
+        f"sowing_intent={extraction.get('sowing_intent')}, "
         f"lang={lang}, intent={extraction.get('raw_intent')}"
     )
-
-    # ── NEW (Fix 13): merge in whatever the prior turn already knew...
 
     # ── NEW (Fix 13): merge in whatever the prior turn already knew, so a
     # crop given two messages ago (or a pest given last message) isn't lost
@@ -812,24 +811,45 @@ async def orchestrate(
     if not extraction.get("symptom") and prior.get("symptom"):
         extraction["symptom"] = prior.get("symptom")
 
+    if extraction.get("needs_clarification"):
+        aspect = extraction.get("clarification_aspect", "service")
+        clarification_msgs = CLARIFICATION_MESSAGES.get(
+            aspect, CLARIFICATION_MESSAGES["service"]
+        )
+        reply = clarification_msgs.get(lang, clarification_msgs["mr"])
+        # ── NEW (Fix 13): save whatever we DID extract instead of
+        # discarding it — otherwise a pest mentioned alongside a missing
+        # crop was lost the moment we asked for clarification.
+        session_store.update_session_data(
+            session_id,
+            crop=extraction.get("crop"),
+            pest=extraction.get("pest"),
+            symptom=extraction.get("symptom"),
+            category_intent=extraction.get("category_intent"),
+            language=lang,
+        )
+        return {
+            "status": "needs_clarification",
+            "service_type": None,
+            "reply_message": reply,
+            "session_updated": True,
+            "detected_language": lang,
+            "crop": None, "qty": None,
+            "needs_location": False,
+        }
 
     # ── Stage 3: Routing ────────────────────────────────────────────────────
-    # 🚀 MEMORY FIX: Bypass LLM routing if we are just answering a crop or horizon question
-    if prior.get("awaiting") in ["crop", "horizon"] and prior.get("service_type"):
-        service_type = prior.get("service_type")
-        logger.info(f"[Orchestrator] Bypassing Routing, reusing locked service_type: {service_type}")
-    else:
-        routing = await _route_to_endpoint(extraction, message)
-        service_type = routing.get("service_type")
-        logger.info(
-            f"[Orchestrator] Routing → {service_type} "
-            f"(confidence: {routing.get('confidence')})"
-        )
+    routing = await _route_to_endpoint(extraction, message)
+    service_type = routing.get("service_type")
+    logger.info(
+        f"[Orchestrator] Routing → {service_type} "
+        f"(confidence: {routing.get('confidence')})"
+    )
+
     if not service_type:
         reply = CLARIFICATION_MESSAGES["service"].get(
             lang, CLARIFICATION_MESSAGES["service"]["mr"]
         )
-        session_store.update_session_data(session_id, awaiting="service") # <--- CHANGE 3: TAG MEMORY
         return {
             "status": "needs_clarification",
             "service_type": None,
@@ -853,7 +873,6 @@ async def orchestrate(
             symptom=extraction.get("symptom"),
             category_intent=extraction.get("category_intent"),
             language=lang,
-            awaiting="crop",  # <--- CHANGE 4: TAG MEMORY
         )
         reply = CLARIFICATION_MESSAGES["crop"].get(lang, CLARIFICATION_MESSAGES["crop"]["mr"])
         return {
@@ -868,19 +887,43 @@ async def orchestrate(
             "needs_horizon": False,
         }
 
-    # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
+    # ── NEW (Fix 17): Sowing-intent bypass — MUST be checked before the
+    # normal fertilizer "pest_mentioned" block below. A farmer who is
+    # sowing has no pest to report yet, so this is a completely separate
+    # branch from pest_confirmation — it never asks "what pest do you see"
+    # and never falls through to the PGR/growth-booster path either.
+    # extraction["sowing_intent"] is only ever true when Stage 2 found no
+    # pest/disease/symptom in the message (see extraction prompt rule 10),
+    # so this check is safe to put ahead of the pest_mentioned check.
+    if service_type == "fertilizer" and extraction.get("sowing_intent"):
+        session_store.update_session_data(
+            session_id,
+            service_type="fertilizer",
+            crop=crop,
+            pest=None,
+            symptom=None,
+            category_intent="SEED_TREATMENT",
+            language=lang,
+            awaiting=None,
+        )
+        ack_text = SEED_TREATMENT_ACK.get(lang, SEED_TREATMENT_ACK["mr"]).format(
+            crop=crop.title() if crop else ("पीक" if lang == "mr" else "Crop")
+        )
+        return {
+            "status": "routed", "service_type": "fertilizer",
+            "reply_message": ack_text,
+            "session_updated": True, "detected_language": lang,
+            "crop": crop, "qty": None,
+            "needs_location": False, "needs_horizon": False,
+        }
+
     # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
     if service_type == "fertilizer":
-        
-        raw_pest = extraction.get("pest")
-        raw_symptom = extraction.get("symptom")
-        cat_intent = (extraction.get("category_intent") or "").upper()
-
-        # It's only a valid request if we have an actual pest/symptom, 
-        # OR if they explicitly just want a Growth Booster (PGR)
-        pest_mentioned = bool(raw_pest) or bool(raw_symptom) or (cat_intent == "PGR")
-
-        
+        pest_mentioned = (
+            extraction.get("pest")
+            or extraction.get("symptom")
+            or extraction.get("category_intent")
+        )
 
         if not pest_mentioned:
             session_store.update_session_data(
@@ -909,7 +952,6 @@ async def orchestrate(
             }
 
     # ── Save to session ─────────────────────────────────────────────────────
-    # Fix 5: pest/symptom/category_intent now saved to session
     session_store.update_session_data(
         session_id,
         service_type=service_type,
@@ -925,25 +967,20 @@ async def orchestrate(
         symptom=extraction.get("symptom"),
         category_intent=extraction.get("category_intent"),
         language=lang,
-        original_message=message,
         raw_intent=extraction.get("raw_intent", ""),
-        awaiting=None,  # <--- CHANGE 5: WIPE MEMORY ON SUCCESS
     )
 
     # ── Final Acks ──
-    # Fix 6+7: explicit ack per service, fertilizer gets NO location prompt
-    # needs_location tells main.py whether to send the location request button
     if service_type == "mandi":
         needs_horizon = False
         needs_location = True
         ack = {
-            "mr": f"✅ *{crop.title() if crop else 'पीक'} मंडी भाव*{multi_crop_warning.get(lang, '')}\n\n📍 आता तुमचे स्थान शेअर करा.",
-            "hi": f"✅ *{crop.title() if crop else 'फसल'} मंडी भाव*{multi_crop_warning.get(lang, '')}\n\n📍 अब अपना स्थान शेयर करें।",
-            "en": f"✅ *{crop.title() if crop else 'Crop'} Mandi Prices*{multi_crop_warning.get(lang, '')}\n\n📍 Please share your location.",
+            "mr": f"✅ *{crop.title() if crop else 'पीक'} मंडी भाव*\n\n📍 आता तुमचे स्थान शेअर करा.",
+            "hi": f"✅ *{crop.title() if crop else 'फसल'} मंडी भाव*\n\n📍 अब अपना स्थान शेयर करें।",
+            "en": f"✅ *{crop.title() if crop else 'Crop'} Mandi Prices*\n\n📍 Please share your location.",
         }
 
     elif service_type == "fertilizer":
-        # By this point pest_mentioned is guaranteed truthy (handled above)
         needs_location = False
         needs_horizon = False
         
@@ -956,17 +993,17 @@ async def orchestrate(
 
         ack = {
             "mr": (
-                f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*{multi_crop_warning.get(lang, '')}\n\n"
+                f"✅ *{crop.title() if crop else 'पीक'} संरक्षण सल्ला*\n\n"
                 f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 पेमेंट करा आणि CIBRC-approved रासायनिक सल्ला मिळवा."
             ),
             "hi": (
-                f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*{multi_crop_warning.get(lang, '')}\n\n"
+                f"✅ *{crop.title() if crop else 'फसल'} सुरक्षा सलाह*\n\n"
                 f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 पेमेंट करें और CIBRC-approved रासायनिक सलाह पाएं।"
             ),
             "en": (
-                f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*{multi_crop_warning.get(lang, '')}\n\n"
+                f"✅ *{crop.title() if crop else 'Crop'} Protection Advice*\n\n"
                 f"{'🐛 ' + str(pest_display) + chr(10) + chr(10) if pest_display else ''}"
                 "💳 Pay to get CIBRC-approved chemical recommendations."
             ),
@@ -974,30 +1011,25 @@ async def orchestrate(
 
     else:  # weather
         needs_location = True
-        # Skip horizon ask if extraction already found harvest_date
         needs_horizon = not bool(extraction.get("harvest_date"))
-        
-        # 🚀 ADD THIS: Save the state so we know what the next message means!
-        if needs_horizon:
-            session_store.update_session_data(session_id, awaiting="horizon")
         ack = {
             "mr": (
-                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*{multi_crop_warning.get(lang, '')}\n\n"
+                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n"
                 f"तुम्हाला किती दिवसांचा अंदाज हवा आहे? खाली निवडा 👇"
                 if needs_horizon else
-                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*{multi_crop_warning.get(lang, '')}\n\n📍 आता तुमचे स्थान शेअर करा."
+                f"✅ *{crop.title() + ' ' if crop else ''}हवामान माहिती*\n\n📍 आता तुमचे स्थान शेअर करा."
             ),
             "hi": (
-                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*{multi_crop_warning.get(lang, '')}\n\n"
+                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n"
                 f"कितने दिनों का अनुमान चाहिए? नीचे चुनें 👇"
                 if needs_horizon else
-                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*{multi_crop_warning.get(lang, '')}\n\n📍 अब अपना स्थान शेयर करें।"
+                f"✅ *{crop.title() + ' ' if crop else ''}मौसम जानकारी*\n\n📍 अब अपना स्थान शेयर करें।"
             ),
             "en": (
-                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*{multi_crop_warning.get(lang, '')}\n\n"
+                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n"
                 f"How many days of forecast do you need? Choose below 👇"
                 if needs_horizon else
-                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*{multi_crop_warning.get(lang, '')}\n\n📍 Please share your location."
+                f"✅ *{crop.title() + ' ' if crop else ''}Weather Info*\n\n📍 Please share your location."
             ),
         }
 

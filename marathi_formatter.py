@@ -28,6 +28,10 @@ FIXES from previous version:
   ✅ max_output_tokens = 3000 (consistent — farmer paid, give full detail)
   ✅ temperature = 0.25 (tighter than 0.3 for factual JSON extraction)
   ✅ System prompt is rules-first for stronger instruction compliance
+  ✅ NEW: seed_treatment category (sowing-time seed dresser advice) now has
+    its own header, field meanings, and output block — completely separate
+    from PGR and from normal in-season pest/disease treatment, so a farmer
+    who is sowing never sees an in-season chemical or vice versa.
 """
 
 import json
@@ -125,53 +129,37 @@ async def format_weather_response(
     today_human = now_ist.strftime("%d %B %Y (%A)")
     current_time = now_ist.strftime("%I:%M %p IST")
 
-    # ── Query intent detection (Python-side, before Gemini sees anything) ──
-    q = (original_text or "").lower()
-    # 🚀 ADDED FERTILIZER KEYWORDS HERE:
-    spray_keywords   = ["फवारणी", "spray", "ड्रोन", "drone", "औषध", "pesticide", "फवार", "खत", "fertilizer", "युरिया", "dap"]
-    rain_keywords    = ["पाऊस", "rain", "पर्जन्य", "वरुण", "बरसात", "पाणी कधी"]
-    harvest_keywords = ["काढणी", "harvest", "कापणी", "निघणे"]
-    long_keywords    = ["महिना", "हंगाम", "season", "month", "दीर्घ", "long"]
-    is_spray_query   = any(k in q for k in spray_keywords)
-    is_rain_query    = any(k in q for k in rain_keywords) and not is_spray_query
-    is_harvest_query = any(k in q for k in harvest_keywords)
-    is_long_query    = any(k in q for k in long_keywords)
-
     prompt = f"""शेतकऱ्याचा प्रश्न: "{original_text or 'पुढील हवामान कसे राहील?'}"
 
 ━━━ DATE ANCHOR — JSON वाचण्यापूर्वी हे वाचा ━━━
-आजची तारीख: {today_iso} ({today_human}). वेळ: {current_time} IST.
-daily_preview मधील प्रत्येक entry FORECAST आहे — {today_iso} सुद्धा forecast च आहे, skip करू नका.
-Date display rule: YYYY-MM-DD → "२२ ऑगस्ट" (फक्त दिवस + मराठी महिना).
-Date mapping: "आज"→{today_iso} | "उद्या"→पुढची date | "परवा"→त्यानंतरची.
-heavy_rain_days / heat_stress_days मधील number म्हणजे day index (1=आज).
-Day index → date: daily_preview[index-1]["date"] वरून काढा.
-
-━━━ QUERY INTENT: {"SPRAY_FOCUSED" if is_spray_query else "RAIN_FOCUSED" if is_rain_query else "HARVEST_FOCUSED" if is_harvest_query else "LONG_TERM" if is_long_query else "GENERAL_WEATHER"} ━━━
-{"→ शेतकऱ्याने फवारणीबद्दल विचारले आहे. फवारणी section सर्वात आधी आणि सर्वात विस्तारित द्या. बाकी sections संक्षिप्त ठेवा." if is_spray_query else ""}
-{"→ शेतकऱ्याने पावसाबद्दल विचारले आहे. पाऊस section विस्तारित द्या, daily_preview सर्व दिवस दाखवा." if is_rain_query else ""}
-{"→ शेतकऱ्याने काढणीबद्दल विचारले आहे. horizon_2 आणि horizon_3 sections विस्तारित द्या." if is_harvest_query else ""}
-{"→ दीर्घकालीन प्रश्न. horizon_3 + enso_iod_state sections विस्तारित द्या." if is_long_query else ""}
+आजची तारीख: {today_iso} ({today_human}). वेळ: {current_time}.
+daily_preview मधील प्रत्येक entry FORECAST आहे — {today_iso} सुद्धा.
+{today_iso} entry skip करू नका.
+Date mapping: "आज"→{today_iso} | "उद्या"→पुढची date | "परवा"→त्यानंतरची
+शेतकऱ्याला date सांगताना: YYYY-MM-DD → "७ ऑगस्ट" असे मराठीत.
+heavy_rain_days / heat_stress_days मधील संख्या म्हणजे day index (1=आज).
+day index → date: daily_preview[index-1]["date"] वरून घ्या.
 
 ━━━ JSON STRUCTURE (हे top-level keys आहेत) ━━━
-season_to_date        → जून १ पासून आत्तापर्यंतचा एकूण पाऊस (harvest_date दिल्यास येतो)
-horizon_1_forecast    → मुख्य 0-16 दिवसांचा अंदाज (हे नेहमी असते)
+season_to_date       → जून १ पासून आत्तापर्यंतचा एकूण पाऊस (harvest_date दिल्यास येतो)
+horizon_1_forecast   → मुख्य 0-16 दिवसांचा अंदाज (हे नेहमी असते)
 horizon_2_subseasonal → ECMWF 3-4 आठवड्यांचा sub-seasonal अंदाज (harvest_date दिल्यास येतो)
-horizon_3_seasonal    → NASA POWER + ENSO दीर्घकालीन मासिक अंदाज (harvest_date दिल्यास येतो)
-enso_iod_state        → ENSO/IOD मान्सून स्थिती (ONI + DMI values)
-days_to_harvest       → काढणीपर्यंत किती दिवस उरले
-partial_data          → true असेल तर horizon_2/3 चा डेटा अपूर्ण आहे
+horizon_3_seasonal   → NASA POWER + ENSO दीर्घकालीन मासिक अंदाज (harvest_date दिल्यास येतो)
+enso_iod_state       → ENSO/IOD मान्सून स्थिती (ONI + DMI values)
+days_to_harvest      → काढणीपर्यंत किती दिवस उरले
+partial_data         → true असेल तर horizon_2/3 चा डेटा अपूर्ण आहे
 
 ━━━ FIELD MEANINGS — season_to_date ━━━
-monsoon_start        → मान्सून हंगाम सुरुवात (सामान्यतः जून १)
-accumulated_rain_mm  → जून १ पासून आत्तापर्यंत एकूण पाऊस (मिमी)
-agronomic_context    → Horizon 3 च्या normals शी तुलना करा हे string सांगते
+monsoon_start           → मान्सून हंगाम सुरुवात (सामान्यतः जून १)
+accumulated_rain_mm     → जून १ पासून आत्तापर्यंत एकूण पाऊस (मिमी)
+agronomic_context       → Horizon 3 च्या normals शी तुलना करा हे string सांगते
 ⚠️ INTERPRET: accumulated_rain_mm ला horizon_3 च्या त्या महिन्याच्या rainfall_normal_mm शी तुलना करा.
   जास्त पाऊस → पूर/ओला रोग धोका सांगा | कमी पाऊस → सिंचन/दुष्काळ धोका सांगा.
 
 ━━━ FIELD MEANINGS — horizon_1_forecast च्या आत ━━━
-source                  → "open_meteo"=पूर्ण डेटा | "visual_crossing_fallback"=VC डेटा (Delta-T अनुपलब्ध) | "nasa_power_fallback"=ड्रोन गणना अनुपलब्ध
-crop_stress_risk_level  → LOW/MEDIUM/HIGH — पिकावरचा एकूण ताण
+source                  → "open_meteo" = पूर्ण डेटा | "nasa_power_fallback" = ड्रोन
+                          गणना उपलब्ध नाही (हे operational_factors मध्ये सांगितले असेल)
+crop_stress_risk_level  → LOW/MEDIUM/HIGH — पिकावरचा एकूण ताण (multiple factors असल्यास HIGH)
 crop_stress_factors[]   → कशामुळे ताण: उष्णता, जड पाऊस, पाण्याची कमतरता, कीड/रोग धोका
 operational_risk_level  → LOW/MEDIUM/HIGH — शेत कामांना अडचण
 operational_factors[]   → कोणती कामे करता येणार नाहीत आणि का
@@ -179,65 +167,40 @@ next_rain_date          → पुढचा पाऊस (≥2mm) कधी य�
 next_dry_spell          → {{ start_date, end_date, days }} — कोरड्या दिवसांचा काळ
                           फवारणी, सिंचन, काढणीसाठी ही खिडकी वापरा
 optimal_drone_spray_dates[] → Delta-T (2-8°C) + वारा (<15km/h) + पाऊस (<2mm) या तिन्ही
-                          अटी पूर्ण असलेले दिवस — वैज्ञानिकदृष्ट्या सर्वोत्तम फवारणीचे दिवस
+                          अटी पूर्ण असलेले दिवस — हे वैज्ञानिकदृष्ट्या सर्वोत्तम फवारणीचे दिवस
 pest_disease_risk_windows[] → सलग 3+ दिवस RH>85% + तापमान 25-32°C असेल तर कीड/बुरशी धोका
-wind_risk_days[]        → दैनंदिन कमाल वारा >20km/h चे दिवस — हे DAILY MAXIMUM आहे, सरासरी नाही.
-                          महाराष्ट्रात मान्सूनमध्ये हे सामान्य आहे.
-                          ⚠️ संपूर्ण दिवस टाळू नका — best_spray_window_by_day मध्ये
-                          सकाळच्या वेळेत अनुकूल खिडकी असू शकते.
+wind_risk_days[]        → वारा >20km/h चे दिवस — फवारणी टाळा (रसायन वाया जाते, drift होते)
 heavy_rain_days[]       → जड पाऊस (पीक-specific threshold ओलांडलेले) day index (1=आज)
 heat_stress_days[]      → उष्णता (पीक-specific max temp ओलांडलेले) day index (1=आज)
 gdd_accumulated_forecast_window → पुढील 16 दिवसांत पीक किती "उष्णता एकक" मिळवणार
-                          (GDD = Growing Degree Days) — जास्त GDD = पीक वेगाने पुढच्या अवस्थेत जाईल
-growth_stage            → germination=उगवण | vegetative=वाढ | flowering=फुलोरा ⚠️सर्वात नाजूक
+                          (GDD = Growing Degree Days — पिकाच्या वाढीचे शास्त्रीय मोजमाप)
+                          जास्त GDD = पीक वेगाने पुढच्या अवस्थेत जाईल
+growth_stage            → पिकाची सध्याची अवस्था (sowing_date असल्यास):
+                          germination=उगवण | vegetative=वाढ | flowering=फुलोरा ⚠️सर्वात नाजूक
                           pod_fill=शेंगा भरणे | maturity=पक्वता
-irrigation_recommended  → हे field null असते — net_water_balance_7d वरूनच सिंचन सल्ला द्या
-                          null असेल तर हे field पूर्णपणे skip करा
-irrigation_recommendation_status → हे field असेल तर पूर्णपणे skip करा — output मध्ये दाखवू नका
+irrigation_recommended  → true = सिंचन करा (net_water_balance_7d < -5mm असेल तर येते)
 net_water_balance_7d    → ७ दिवसांत पाऊस minus वाफ (ET0) = निव्वळ पाणीसाठा (mm)
-                          >0=पाणी पुरेसे | -5 ते 0=किरकोळ कमतरता
-                          -5 ते -10=सिंचन करा | <-10=गंभीर कमतरता ⚠️ तातडीने सिंचन
+                          >0 = पाणी जास्त (ओलसर) | -5 ते 0 = किरकोळ कमतरता
+                          -5 ते -10 = सिंचन करा | < -10 = गंभीर कमतरता ⚠️ तातडीने सिंचन
 et0_7d_mm               → ७ दिवसांत जमिनीतून वाफ होणारे पाणी (mm) — FAO Penman-Monteith
 rainfall_7d_mm          → ७ दिवसांतील एकूण अंदाजित पाऊस (mm)
 
 ━━━ FIELD MEANINGS — daily_preview (प्रत्येक दिवसाचे fields) ━━━
-date          → YYYY-MM-DD (मराठीत "७ ऑगस्ट" सांगा)
-rain_mm       → त्या दिवशी किती पाऊस अपेक्षित
-et0_mm        → त्या दिवशी किती पाणी वाफ होईल
-t_max_c       → जास्तीत जास्त तापमान (°C)
-t_min_c       → किमान तापमान (°C)
-rh_max_pct    → जास्तीत जास्त आर्द्रता (%) — >85% + उबदार = बुरशी/कीड धोका
-rh_min_pct    → किमान आर्द्रता (%) — Delta-T गणनेसाठी
-wind_kmh      → दिवसाचा कमाल sustained वारा km/h (सरासरी नाही)
-wind_gust_kmh → दिवसाचा कमाल gust km/h — null असेल तर पूर्णपणे skip करा
-wcode         → WMO हवामान कोड:
-                0=☀️स्वच्छ | 1-3=🌤️ढगाळ | 45-48=🌫️धुके
-                51-67=🌧️पाऊस | 80-82=🌧️⚠️मुसळधार | 95-99=⛈️मेघगर्जना
-                ⚠️ wcode 95-99 असेल त्या दिवशी शेतात काम करू नका
-
-━━━ FIELD MEANINGS — best_spray_window_by_day (CRITICAL) ━━━
-Structure: {{"YYYY-MM-DD": [ {{window_start, window_end, avg_wind_kmh, max_wind_kmh, max_gust_kmh, rain_mm, rain_probability_max_pct, spray_status}}, ... ]}}
-- प्रत्येक date साठी array असते — रिकामी array [] म्हणजे त्या दिवशी कोणतीही सुरक्षित वेळ नाही
-- window_start/end: "2026-08-22T06:00" → "सकाळी ६:००" असे मराठीत
-- max_wind_kmh → त्या window मधील सर्वाधिक sustained वारा
-- max_gust_kmh → त्या window मधील सर्वाधिक gust — null असेल तर skip
-- rain_probability_max_pct → पाऊस येण्याची शक्यता % — null असेल तर skip
-- spray_status: "favorable"=✅ आदर्श | "caution"=⚠️ सावधगिरीने | array रिकामी=❌ सुरक्षित वेळ नाही
-
-ड्रोन vs Manual distinction (CRITICAL — प्रत्येक window साठी अनिवार्य):
-- max_gust_kmh < 20    → ✅ ड्रोन + manual दोन्ही
-- max_gust_kmh 20-35   → ✅ Manual knapsack ठीक | ❌ ड्रोन DGCA नियमानुसार नाही
-- max_gust_kmh > 35    → ❌ दोन्ही नाही — फवारणी रद्द करा
-- max_gust_kmh null    → max_wind_kmh वरून: <15=दोन्ही ठीक | 15-25=manual फक्त | >25=दोन्ही नाही
-
-━━━ FIELD MEANINGS — danger_spray_window_by_day (नवीन field) ━━━
-Structure: {{"YYYY-MM-DD": {{window_start, window_end, max_wind_kmh, max_gust_kmh, rain_mm, spray_status}}}}
-- हे त्या दिवसातील सर्वात वाईट/धोकादायक वेळ आहे
-- फक्त ❌ block दाखवण्यासाठी वापरा: "दुपारी X ते Y टाळा — वारा Z km/h"
-- null/missing असेल → त्या दिवशी विशेष धोकादायक वेळ नाही, हा section skip करा
+date        → YYYY-MM-DD (मराठीत "७ ऑगस्ट" सांगा)
+rain_mm     → त्या दिवशी किती पाऊस अपेक्षित
+et0_mm      → त्या दिवशी किती पाणी वाफ होईल (सिंचन गरज मोजण्यासाठी)
+t_max_c     → जास्तीत जास्त तापमान (°C)
+t_min_c     → किमान तापमान (°C)
+rh_max_pct  → जास्तीत जास्त आर्द्रता (%) — >85% + उबदार = बुरशी/कीड धोका
+rh_min_pct  → किमान आर्द्रता (%) — Delta-T गणनेसाठी वापरली जाते
+wind_kmh    → वाऱ्याचा वेग (km/h) — >20 = फवारणी टाळा | 3-15 = आदर्श
+wcode       → WMO हवामान कोड (खाली अर्थ पहा):
+              0=स्वच्छ ☀️ | 1-3=ढगाळ 🌤️ | 45-48=धुके 🌫️
+              51-67=पाऊस 🌧️ | 80-82=मुसळधार 🌧️⚠️ | 95-99=मेघगर्जना ⛈️
+              ⚠️ wcode 95-99 असेल त्या दिवशी शेतात काम करू नका
 
 ━━━ FIELD MEANINGS — horizon_2_subseasonal ━━━
-valid_window     → हा अंदाज कोणत्या कालावधीसाठी आहे
+valid_window    → हा अंदाज कोणत्या कालावधीसाठी आहे
 weekly_outlook[] → {{ week, dates, projected_rain_mm, trend }}
 trend values:
   "normal_or_wet" → सामान्य किंवा जास्त पाऊस अपेक्षित
@@ -245,230 +208,137 @@ trend values:
 
 ━━━ FIELD MEANINGS — horizon_3_seasonal (मासिक दीर्घकालीन अंदाज) ━━━
 monthly_outlook[] प्रत्येक महिन्यासाठी:
-  rainfall_normal_mm     → ३०-वर्षांचा सरासरी पाऊस (NASA POWER)
-  rainfall_adjusted_mm   → ENSO/IOD ग्राह्य धरून समायोजित अंदाज
-  rainfall_pct_of_normal → >110%=खूप जास्त पाऊस 🌊 | 90-110%=सामान्य ✅
-                           75-90%=कमी पाऊस ⚠️ | <75%=टंचाई धोका 🔴
-  t_max_normal_c         → सामान्य कमाल तापमान (°C)
-  adjustment_basis       → "ENSO=..., IOD=..."=मान्सून काळात ENSO/IOD वापरला
-                           "climatology only"=मान्सूनबाहेर — फक्त ऐतिहासिक सरासरी
+  rainfall_normal_mm      → त्या महिन्याचा ३०-वर्षांचा सरासरी पाऊस (NASA POWER)
+  rainfall_adjusted_mm    → ENSO/IOD ग्राह्य धरून समायोजित अंदाज
+  rainfall_pct_of_normal  → सामान्याच्या किती टक्के:
+                            >110% = खूप जास्त पाऊस 🌊 | 90-110% = सामान्य ✅
+                            75-90% = कमी पाऊस ⚠️ | <75% = टंचाई धोका 🔴
+  t_max_normal_c          → सामान्य कमाल तापमान (°C)
+  adjustment_basis        → "ENSO=..., IOD=..." = मान्सून काळात ENSO/IOD वापरला
+                            "climatology only" = मान्सूनबाहेर — फक्त ऐतिहासिक सरासरी
 
 ━━━ FIELD MEANINGS — enso_iod_state ━━━
-oni_phase  → el_nino=मान्सून कमकुवत (कमी पाऊस) | la_nina=मान्सून जोरदार (जास्त पाऊस) | neutral=सामान्य
-oni_value  → ONI निर्देशांक: >0.5=El Niño, <-0.5=La Niña
-dmi_phase  → positive_iod=El Niño परिणाम कमी करतो | negative_iod=La Niña परिणाम कमी करतो | neutral=सामान्य
-dmi_value  → DMI निर्देशांक (ताकद दर्शवतो)
-COMBINED EFFECT:
+oni_phase   → el_nino = मान्सून कमकुवत होण्याची शक्यता (कमी पाऊस)
+              la_nina = मान्सून जोरदार राहण्याची शक्यता (जास्त पाऊस)
+              neutral = सामान्य
+oni_value   → ONI निर्देशांक संख्या: >0.5=El Niño, <-0.5=La Niña (ताकद दर्शवतो)
+dmi_phase   → positive_iod = El Niño चा परिणाम कमी करतो (भारतात पाऊस वाढतो)
+              negative_iod = La Niña चा परिणाम कमी करतो (पाऊस घटतो)
+              neutral = सामान्य
+dmi_value   → DMI निर्देशांक संख्या (ताकद दर्शवतो)
+COMBINED EFFECT (हे महत्वाचे):
   La Niña + positive_iod  → ⛈️ खूप जास्त पाऊस — पूर/ओला रोग सावधानता
-  La Niña + negative_iod  → थोडा जास्त पाऊस, mixed
+  La Niña + negative_iod  → ≈ mixed — थोडा जास्त पाऊस
   El Niño + positive_iod  → ≈ balanced — सामान्य पाऊस शक्य
   El Niño + negative_iod  → 🔴 दुष्काळ धोका — सिंचन योजना आखा
-━━━ KEY THRESHOLDS ━━━
-━net_water_balance_7d:
+
+━━━ KEY THRESHOLDS (interpret करताना वापरा) ━━━
+net_water_balance_7d:
   > 0        → जमिनीत पाणी पुरेसे आहे
   -5 ते 0    → किरकोळ कमतरता — पाण्यावर लक्ष ठेवा
-  -5 ते -10  → सिंचन करा
+  -5 ते -10  → irrigation_recommended=true असेल — सिंचन करा
   < -10      → गंभीर कमतरता — तातडीने सिंचन करा ⚠️
-
 Delta-T (optimal_drone_spray_dates मधून अप्रत्यक्षपणे):
-  2-8°C  → आदर्श फवारणी — रसायन पिकापर्यंत नक्की पोहोचते
-  <2°C   → धुके/inversion — फवारणी टाळा
-  >8°C   → थेंब वाफ होतात — सकाळी लवकर/संध्याकाळी करा
-
-wind_kmh (daily_preview) — दिवसाचा कमाल वेग, सरासरी नाही:
-  < 15 km/h  → दिवसभर फवारणीसाठी योग्य
-  15-25 km/h → सकाळी/संध्याकाळी वेळ निवडा — best_spray_window_by_day पहा
-  > 25 km/h  → best_spray_window_by_day मध्ये योग्य वेळ असेल तरच फवारणी करा
-  > 35 km/h  → ❌ फवारणी टाळा — रसायन शेजारच्या शेतात जाते
-
-wind_gust_kmh — sustained wind_kmh पेक्षा अधिक महत्वाचा:
-  < 20 km/h  → ड्रोन + manual दोन्ही ठीक
-  20-35 km/h → manual knapsack ठीक — ड्रोन DGCA नियमानुसार टाळा
-  > 35 km/h  → ❌ कोणतीही फवारणी टाळा
-  null       → wind_kmh वरूनच निर्णय घ्या
-
-growth_stage + net_water_balance:
-  flowering + net_water_balance_7d < -10 → ⚠️ तातडीने सिंचन — फुलोरा अवस्थेत पाण्याची कमतरता उत्पादनावर थेट परिणाम करते
+  2-8°C = आदर्श फवारणी (रसायन पिकापर्यंत नक्की पोहोचते)
+  <2°C = धुके/inversion — फवारणी टाळा (drift होते)
+  >8°C = खूप उष्ण/कोरडे — थेंब वाफ होतात, रसायन वाया (सकाळी लवकर/संध्याकाळी करा)
+  ⚠️ optimal_drone_spray_dates रिकामा असेल तर पुढील काही दिवस फवारणीसाठी चांगले नाहीत
+wind_kmh (daily_preview):
+  < 15 km/h  → फवारणीसाठी योग्य
+  15-20 km/h → सावधानता — बारीक थेंब वापरू नका
+  > 20 km/h  → फवारणी टाळा (रसायन शेजारच्या शेतात जाते, नुकसान)
+growth_stage + net_water_balance सल्ला:
+  flowering (फुलोरा) + negative balance → ⚠️ तातडीने सिंचन — या अवस्थेत पाण्याची कमतरता उत्पादनावर थेट परिणाम करते
   pod_fill + heavy_rain → बुरशीजन्य रोगांसाठी prophylactic फवारणी विचार करा
-━━━ SPRAY WINDOW OUTPUT RULES ━━━
 
-नियम १ — प्रत्येक window साठी हे सांगा:
-  वेळ: window_start→window_end मराठीत ("सकाळी ६:०० ते ८:००")
-  वारा: max_wind_kmh km/h[max_gust_kmh असेल: (जोर max_gust_kmh km/h)]
-  पाऊस: rain_mm mm[rain_probability_max_pct असेल: , शक्यता rain_probability_max_pct%]
-  ड्रोन/Manual: वरील distinction नुसार स्पष्टपणे सांगा
-  spray_status="caution" असेल → 💡 वारा थोडा जास्त आहे — नोझल पिकाच्या अगदी जवळ (६-८ इंच) ठेवा, जेणेकरून औषध drift होणार नाही.
+━━━ HOW TO ANSWER (शेतकऱ्याचा प्रश्न वाचा, त्यानुसार उत्तर द्या) ━━━
 
-नियम २ — danger_spray_window_by_day असेल त्या दिवशी:
-  ❌ *टाळा — [window_start→वेळ] ते [window_end→वेळ]:* वारा [max_wind_kmh] km/h[gust: (जोर [max_gust_kmh])] — औषध drift होईल
+फवारणी बद्दल विचारले (आज/उद्या/परवा) →
+  त्या दिवसाचा daily_preview मधून: rain_mm, wind_kmh, wcode.
+  optimal_drone_spray_dates मध्ये तो दिवस असेल → ✅ ड्रोन फवारणीसाठी आदर्श.
+  wind_risk_days मध्ये तो दिवस असेल → ⚠️ फवारणी टाळा, वारा जास्त आहे.
+  wcode 95-99 असेल → ⚠️ मेघगर्जना — शेतात जाऊ नका.
+  pest_disease_risk_windows असेल तर mention करा — फवारणीची तातडी वाढते.
+  optimal_drone_spray_dates रिकामा असेल → "पुढील काही दिवस फवारणीसाठी हवामान अनुकूल नाही"
 
-नियम ३ — best_spray_window_by_day रिकामी array [] असेल:
-  ❌ संपूर्ण दिवस फवारणीयोग्य नाही — [danger window असेल: कारण: वारा [max_wind_kmh] km/h]
-  💡 पर्यायी उपाय: [danger window मध्ये rain_mm < 2 असेल म्हणजे फक्त वाऱ्यामुळे block:]
-     वाऱ्यामुळे Foliar Spray टाळा — पण Broadcasting (जमिनीवर पसरवणे) किंवा Drip/Fertigation द्वारे खते देणे शक्य आहे.
-  [danger window मध्ये rain_mm ≥ 2 असेल: आज पाऊसही आहे — Broadcasting आणि Drip दोन्ही टाळा, खत वाहून जाईल.]
+पाऊस बद्दल विचारले →
+  next_rain_date सांगा (मराठी date).
+  daily_preview मधून प्रत्येक दिवसाचा rain_mm + wcode emoji सांगा.
+  next_dry_spell असेल तर — "या काळात फवारणी/काढणी योग्य संधी"
+  season_to_date accumulated_rain_mm सांगा (असल्यास) — हंगाम कसा चालू आहे.
 
-नियम ४ — wind_risk_days मध्ये date असेल पण best_spray_window_by_day मध्ये favorable/caution window असेल:
-  "दिवसाचा कमाल वारा जास्त आहे — पण [window वेळ] मध्ये वारा [max_wind_kmh] km/h आहे, फवारणी शक्य आहे"
-  → "संपूर्ण दिवस टाळा" कधीही म्हणू नका जोपर्यंत array रिकामी नाही
+सामान्य हवामान / पुढील काही दिवस →
+  daily_preview प्रत्येक दिवस: date→मराठी, rain_mm, t_max_c, wind_kmh, wcode→emoji.
+  crop_stress_risk_level + factors सांगा.
+  net_water_balance_7d वरून: सिंचन सल्ला (threshold प्रमाणे).
+  irrigation_recommended=true असेल → स्पष्ट सिंचन सल्ला द्या.
+  growth_stage असेल → त्याला अनुसरून विशेष सल्ला द्या.
+  gdd_accumulated_forecast_window असेल → "पुढील 16 दिवसांत पीक [GDD] उष्णता एकके मिळवेल"
+  next_dry_spell असेल तर सांगा.
+  horizon_2 असेल तर weekly_outlook: "dry_anomaly" = सिंचन तयार ठेवा सांगा.
 
-नियम ५ — optimal_drone_spray_dates मध्ये date असेल:
-  त्या window जवळ: "✅ ड्रोन फवारणीसाठी आदर्श — Delta-T आणि वारा दोन्ही योग्य"
-
-नियम ६ — pest_disease_risk_windows असेल:
-  "🐛 कीड/बुरशी धोका [dates] — वातावरण कीडीसाठी अनुकूल, उपलब्ध window मध्ये तातडीने फवारणी करा"
-
-━━━ HOW TO ANSWER — intent नुसार ━━━
-
-SPRAY_FOCUSED (शेतकऱ्याने फवारणीबद्दल विचारले):
-  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
-           उदा. "होय, उद्या सकाळी ६ ते ८ फवारणी करता येईल." किंवा "नाही, उद्या वारा जास्त आहे — परवा सकाळी संधी आहे."
-           Generic header नको — थेट उत्तर द्या.
-  Step 1 → best_spray_window_by_day: आज + उद्या + परवा तिन्ही दिवसांचे windows विस्तारित द्या (नियम १-५ नुसार)
-  Step 2 → danger_spray_window_by_day: धोकादायक वेळ सांगा (नियम २ नुसार)
-  Step 3 → pest_disease_risk_windows असेल → तातडी सांगा (नियम ६)
-  Step 4 → optimal_drone_spray_dates → ड्रोन availability सांगा
-  Step 5 → daily_preview: फक्त आज + उद्या + परवाचे rain_mm + wcode (संक्षिप्त)
-  Step 6 → net_water_balance_7d: एक ओळ फक्त
-  Step 7 → wcode 95-99 असेल → ⚠️ मेघगर्जना — शेतात जाऊ नका — हे spray window आधी येते
-  बाकी sections (horizon_2, horizon_3, enso) → skip करा जोपर्यंत harvest_date नसेल
-
-RAIN_FOCUSED (पावसाबद्दल विचारले):
-  Step 1 → next_rain_date सांगा (मराठी date)
-  Step 2 → daily_preview: सर्व उपलब्ध दिवस, rain_mm + wcode emoji + t_max_c
-  Step 3 → next_dry_spell असेल → "या काळात फवारणी/काढणी योग्य संधी"
-  Step 4 → season_to_date accumulated_rain_mm सांगा — हंगाम surplus/deficit
-  Step 5 → horizon_2 weekly_outlook: dry_anomaly असेल → सिंचन तयार ठेवा
-  Step 6 → net_water_balance_7d एक ओळ
-  Spray windows → skip
-
-GENERAL_WEATHER (default):
-  Step 1 → daily_preview: पहिले ७ दिवस (date→मराठी, rain_mm, t_max_c, wind_kmh, wcode emoji)
-  Step 2 → net_water_balance_7d → सिंचन सल्ला (threshold प्रमाणे)
-  Step 3 → growth_stage + GDD असेल → पीक अवस्था सल्ला
-  Step 4 → best_spray_window_by_day: फक्त आज + उद्याचे windows (संक्षिप्त, नियम १ नुसार)
-  Step 5 → crop_stress_risk_level + factors
-  Step 6 → next_dry_spell असेल → संधी सांगा
-  Step 7 → horizon_2 + horizon_3 + enso: harvest_date दिल्यास फक्त
-
-HARVEST_FOCUSED / LONG_TERM:
-  Step 1 → horizon_3 monthly_outlook: प्रत्येक महिना rainfall_pct_of_normal सहित
-  Step 2 → enso_iod_state: combined effect सांगा
-  Step 3 → horizon_2 weekly_outlook
-  Step 4 → season_to_date surplus/deficit
-  Step 5 → daily_preview: फक्त पहिले ५ दिवस संक्षिप्त
-  Spray windows → skip
-
-पाऊस / सामान्य / दीर्घकालीन HOW TO ANSWER (existing logic — preserve):
-  फवारणी बद्दल → Step 1-7 SPRAY_FOCUSED नुसार
-  पाऊस बद्दल → RAIN_FOCUSED नुसार
-  सामान्य → GENERAL_WEATHER नुसार
-  दीर्घकालीन → HARVEST_FOCUSED/LONG_TERM नुसार
+दीर्घकालीन / हंगाम बद्दल विचारले →
+  horizon_3_seasonal: rainfall_pct_of_normal प्रत्येक महिन्यासाठी सांगा.
+  >110% → जास्त पाऊस, बुरशी/पूर सावधानता
+  <90% → कमी पाऊस, सिंचन योजना आखा
+  enso_iod_state: combined effect (वर दिलेले) वापरून मान्सून outlook सांगा.
+  season_to_date असेल → हंगाम आत्तापर्यंत surplus/deficit कसा आहे ते सांगा.
 
 ━━━ OUTPUT FORMAT ━━━
-
-[SPRAY_FOCUSED असेल तर — थेट उत्तर सर्वात आधी, generic header नाही:]
-[शेतकऱ्याच्या प्रश्नाचे थेट १-२ ओळींत उत्तर — उदा. "होय, उद्या सकाळी ६ ते ८ फवारणी करता येईल."]
-
-[GENERAL / RAIN / HARVEST असेल तर:]
 *[पीक] हवामान अंदाज* 🌾
 
-[growth_stage असेल तर:]
-🌱 *पीक अवस्था:* [growth_stage मराठीत] [days_to_harvest असेल: | काढणी [N] दिवसांत]
-[GDD असेल: पुढील 16 दिवसांत [gdd] उष्णता एकके मिळणार]
-[growth_stage विशेष सल्ला: flowering+negative balance→तातडीने सिंचन | pod_fill+heavy_rain→prophylactic फवारणी]
+[season_to_date असेल तर:]
+🌧️ *हंगाम पाऊस (जून १ पासून):* [accumulated_rain_mm] मिमी
+[surplus/deficit interpretation येथे]
 
-[SPRAY_FOCUSED — हे section FIRST, विस्तारित:]
-🚜 *फवारणीसाठी सुरक्षित वेळ*
+☀️ *पुढील [N] दिवस:*
+- [मराठी date] [wcode emoji]: [rain_mm] मिमी पाऊस, [t_max_c]°C, वारा [wind_kmh] km/h
+[प्रत्येक दिवस असाच — daily_preview मधील सर्व दिवस]
 
-[आज/उद्या/परवा प्रत्येक दिवसासाठी:]
-📅 *[मराठी date] ([wcode emoji]):*
-[wcode 95-99 असेल: ⚠️ मेघगर्जना — आज शेतात जाऊ नका]
-[best_spray_window_by_day मध्ये windows असतील:]
-✅ *सुरक्षित वेळ:*
-- *[window_start→मराठी वेळ] ते [window_end→मराठी वेळ]:* वारा [max_wind_kmh] km/h[gust null नसेल: (जोर [max_gust_kmh] km/h)][rain_mm>0: , पाऊस [rain_mm] mm][rain_prob null नसेल: , शक्यता [rain_probability_max_pct]%]
-  → [ड्रोन/manual distinction — नियम १ नुसार]
-  [spray_status="caution": 💡 नोझल पिकाच्या अगदी जवळ (६-८ इंच) ठेवा — वारा थोडा जास्त आहे.]
-[दुसरी window असेल:]
-- *[वेळ] ते [वेळ]:* [तेच fields + distinction + caution टीप]
-[danger_spray_window_by_day त्या date साठी असेल:]
-❌ *टाळा — [danger window_start→वेळ] ते [window_end→वेळ]:* वारा [max_wind_kmh] km/h[gust: (जोर [max_gust_kmh])] — औषध उडून जाईल
-[best array रिकामी असेल:]
-❌ *संपूर्ण दिवस फवारणीयोग्य नाही*[danger window असेल: — वारा [max_wind_kmh] km/h]
-💡 *पर्यायी उपाय:* [danger rain_mm < 2: वाऱ्यामुळे Foliar Spray टाळा — Broadcasting किंवा Drip/Fertigation द्वारे खते देणे शक्य आहे.]
-[danger rain_mm ≥ 2: आज पाऊसही आहे — Broadcasting आणि Drip दोन्ही टाळा, खत वाहून जाईल.]
-
-[optimal_drone_spray_dates असेल:]
-🛸 *ड्रोन फवारणी आदर्श दिवस:* [dates → मराठीत] — Delta-T + वारा दोन्ही नियंत्रणात
-
-[pest_disease_risk_windows असेल:]
-🐛 *⚠️ कीड/बुरशी धोका:* [dates] — वातावरण कीडीसाठी अनुकूल, उपलब्ध window मध्ये तातडीने फवारणी करा
-
-[RAIN_FOCUSED / GENERAL — daily_preview section:]
-☀️ *पुढील दिवसांचा अंदाज:*
-[प्रत्येक दिवस:]
-- *[मराठी date]* [wcode emoji]: पाऊस [rain_mm] मिमी, कमाल [t_max_c]°C, वारा [wind_kmh] km/h[wind_gust_kmh null नसेल: (जोर [wind_gust_kmh])]
-
-[net_water_balance_7d — SPRAY_FOCUSED मध्ये एक ओळ, बाकी सर्वांत पूर्ण:]
-[SPRAY_FOCUSED:] 💧 *पाण्याचे संतुलन:* [net_water_balance_7d] मिमी — [एक ओळ interpretation]
-[बाकी:] 💧 *पाण्याचा ताळेबंद (७ दिवस):* [net_water_balance_7d] मिमी
+💧 *पाण्याचा ताळेबंद (७ दिवस):* [net_water_balance_7d] मिमी
 (पाऊस [rainfall_7d_mm] मिमी − वाफ [et0_7d_mm] मिमी)
-[threshold नुसार: किरकोळ कमतरता / सिंचन करा ⚠️ / तातडीने सिंचन 🔴]
+[negative threshold नुसार: किरकोळ / सिंचन करा / तातडीने सिंचन ⚠️]
 
-[GENERAL मध्ये spray windows — संक्षिप्त, फक्त आज + उद्या:]
+[growth_stage असेल तर:]
+🌱 *पीक अवस्था:* [growth_stage मराठीत] | [days_to_harvest असेल: काढणी [N] दिवसात]
+[GDD असेल: पुढील 16 दिवसांत [gdd] उष्णता एकके मिळणार — पीक वेगाने पुढे जाईल/हळू]
+[growth_stage विशेष सल्ला येथे]
+
 🚜 *फवारणी सल्ला:*
-- [मराठी date]: [spray_status emoji] [window_start→वेळ] ते [window_end→वेळ] | वारा [max_wind_kmh] km/h[gust: (जोर [max_gust_kmh])]
-  → [ड्रोन/manual distinction]
-  [caution: 💡 नोझल जवळ ठेवा]
-[null/रिकामी entry: - [मराठी date]: ❌ फवारणीसाठी चांगली वेळ नाही]
-[wind_risk_days असेल: ⏰ [dates] — दिवसाचा कमाल वारा जास्त, पण सकाळच्या खिडकीत फवारणी शक्य — वर पहा]
+✅ सर्वोत्तम दिवस: [optimal_drone_spray_dates → मराठीत] (Delta-T + वारा योग्य)
+⚠️ टाळा: [wind_risk_days → मराठीत] — वारा जास्त
+[pest_disease_risk_windows असेल:] 🐛 कीड/बुरशी धोका: [dates → मराठीत] — आत्ताच फवारणी विचार करा
 
-[पीक ताण — GENERAL/RAIN मध्ये:]
-🌡️ *पीक ताण:* [LOW→कमी 🟢 | MEDIUM→मध्यम 🟡 | HIGH→जास्त 🔴]
-[factors: कारण: [factors मराठीत]]
-[operational_factors: ⚠️ [factors]]
+🌡️ *पीक ताण:* [crop_stress_risk_level मराठीत]
+[crop_stress_factors असतील:] कारण: [factors]
+[operational_factors असतील:] ⚠️ [factors]
 
-[horizon_2 असेल — HARVEST/LONG_TERM/RAIN मध्ये:]
+[horizon_2 असेल तर:]
 📅 *पुढील महिन्याचा अंदाज (ECMWF):*
-- आठवडा [N] ([dates]): [projected_rain_mm] मिमी — [dry_anomaly→⚠️ कमी पाऊस, सिंचन तयार ठेवा | normal_or_wet→सामान्य/जास्त पाऊस]
+- [week 3 dates]: [projected_rain_mm] मिमी — [trend: dry_anomaly→कमी पाऊस⚠️ सिंचन तयार ठेवा | normal_or_wet→सामान्य/जास्त पाऊस]
+- [week 4 dates]: [projected_rain_mm] मिमी — [trend मराठीत]
 
-[horizon_3 असेल — HARVEST/LONG_TERM मध्ये:]
-📆 *हंगाम अंदाज (NASA):*
-[प्रत्येक month: *[महिना मराठीत]:* [rainfall_pct_of_normal]% सामान्य — [>110%→जास्त पाऊस ⛈️ | 90-110%→सामान्य ✅ | <90%→कमी पाऊस ⚠️ सिंचन तयार]]
+[horizon_3 असेल तर:]
+📆 *दीर्घकालीन अंदाज (NASA):*
+[प्रत्येक month: month_name + rainfall_pct_of_normal interpretation]
 
-[enso_iod_state असेल — HARVEST/LONG_TERM मध्ये:]
-🌏 *मान्सून स्थिती:* [oni_phase मराठीत][oni_value: (ONI [value])] | [dmi_phase मराठीत][dmi_value: (DMI [value])]
-[combined effect एक ओळ — वरील COMBINED EFFECT table नुसार]
-
-[season_to_date accumulated_rain_mm असेल:]
-🌧️ *हंगाम पाऊस (जून १ पासून):* [accumulated_rain_mm] मिमी — [surplus/deficit interpretation]
+[enso_iod_state असेल तर:]
+🌏 *मान्सून स्थिती:* [oni_phase मराठीत] ([oni_value असेल: ONI [value]])
+[dmi_phase मराठीत] ([dmi_value असेल: DMI [value]])
+[combined effect मराठीत — वर दिलेल्या combination logic नुसार]
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 ━━━ FINAL RULES ━━━
-- JSON key नावे कधीही output मध्ये येऊ नयेत (horizon_1_forecast, daily_preview, wcode, etc.)
-- null fields पूर्णपणे skip करा — "उपलब्ध नाही" पण लिहू नका
+- JSON key नावे कधीही छापू नका (horizon_1_forecast, daily_preview, wcode, etc.)
 - Dates नेहमी "७ ऑगस्ट" format — YYYY-MM-DD कधीही नको
-- heavy_rain_days/heat_stress_days → daily_preview मधून actual date काढा
+- heavy_rain_days/heat_stress_days मधील संख्या → daily_preview मधून actual date काढा
 - partial_data=true असेल तर: "काही दीर्घकालीन डेटा उपलब्ध नाही"
-- source="nasa_power_fallback" → "ड्रोन फवारणी गणना सध्या उपलब्ध नाही" एक ओळ
-- source="visual_crossing_fallback" → Delta-T mention करू नका
-- irrigation_recommended null → output मध्ये कधीही येऊ नका
-- irrigation_recommendation_status → output मध्ये कधीही येऊ नका
-- spray_windows field → output मध्ये कधीही येऊ नका — फक्त best_spray_window_by_day आणि danger_spray_window_by_day वापरा
-- wind_gust_kmh null असेल → त्या दिवशी gust mention करू नका
-- best_spray_window_by_day मध्ये key missing (not empty array) → त्या date साठी windows नाहीत असे समजा
-- wind_risk_days = blanket block नाही — best_spray_window_by_day तपासा, वेळेचा सल्ला द्या
-- महाराष्ट्र मान्सून context: 15-25 km/h वारा सामान्य आहे — संपूर्ण दिवस block करू नका
-- wind_gust_kmh हा sustained wind_kmh पेक्षा अधिक महत्वाचा फवारणी निर्णयासाठी
-- ड्रोन: DGCA नियमानुसार gusts <20 km/h — हे optimal_drone_spray_dates मध्ये आधीच तपासले आहे
-- rainfall_pct_of_normal शिवाय horizon_3 पाऊस सांगू नका
-- adjustment_basis "climatology only" → ENSO/IOD mention करू नका त्या महिन्यासाठी
-- SPRAY_FOCUSED → horizon_2, horizon_3, enso sections skip (harvest_date असेल तरच एक ओळ summary)
-- danger_spray_window_by_day null/missing → danger block पूर्णपणे skip करा
-- wcode 95-99 असलेल्या दिवशी → spray window आधी मेघगर्जना warning द्या
-- प्रत्येक window साठी ड्रोन/manual distinction अनिवार्य आहे"""
+- source="nasa_power_fallback" असेल: "ड्रोन फवारणी गणना सध्या उपलब्ध नाही"
+- JSON मध्ये नसलेले field/section पूर्णपणे skip करा
+- adjustment_basis "climatology only" असेल तर ENSO/IOD mention करू नका त्या महिन्यासाठी
+- rainfall_pct_of_normal शिवाय दीर्घकालीन पाऊस सांगू नका — हा आकडा अनिवार्य आहे"""
 
     return await _call_gemini(prompt)
 
@@ -673,6 +543,107 @@ JSON मध्ये qty_quintals, min_price/max_price, transport_cost_est अ�
 - JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
 
     return await _call_gemini(prompt)
+# ─── Cross-service recommendation engine (deterministic, non-LLM) ────────────
+# NOTE: this runs in plain Python on the raw JSON, NOT inside the Gemini
+# prompt -- a recommendation like "check weather before spraying" should
+# always be consistent with what's actually in the data, never something
+# Gemini might phrase differently or skip on a given call. Keeping it
+# rule-based means the same input always produces the same suggestion.
+
+import re as _re
+
+
+def _cross_service_suggestions(data: dict[str, Any]) -> str:
+    """
+    Looks at the crop-protection response and decides whether to nudge the
+    farmer toward the *weather* and/or *mandi* services -- based on real
+    relationships between what was recommended and what those services
+    answer, not a generic "try our other services" line.
+
+    Relations used:
+      - Seed treatment (sowing intent) -> WEATHER
+        Germination needs the right rain/moisture window right after
+        sowing -- this is exactly what /weather-risk's daily_preview and
+        net_water_balance_7d answer.
+      - Herbicide present -> WEATHER
+        Herbicides need a rain-free window (roughly 6-8 hrs) after
+        application to be absorbed -- rain before that washes them off
+        and wastes the spray.
+      - Insecticide / fungicide / bio_pesticide / PGR present (i.e.
+        anything that gets SPRAYED) -> WEATHER
+        Wind >20km/h or rain <2mm right after spraying wastes the
+        chemical and risks drift -- /weather-risk's
+        optimal_drone_spray_dates / wind_risk_days answer this directly.
+      - A short-ish waiting period (PHI, <=20 days) is present on any
+        recommended chemical -> MANDI
+        A known harvest countdown is the moment to start checking sale
+        price/nearby mandis ahead of time, not scramble right after
+        harvest.
+
+    Herbicide + short PHI can both fire -- e.g. an herbicide near harvest
+    on a fast crop -- so this can return both suggestions, but always at
+    most one WEATHER line and one MANDI line (never duplicated).
+    """
+    resolved = data.get("resolved_parameters", {}) or {}
+    recs = data.get("recommendations", {}) or {}
+    is_seed = bool(resolved.get("is_seed_treatment_query"))
+
+    cats_present = set(recs.keys()) - {"overlap_best_matches"}
+    # Only count categories that actually have entries (empty lists don't count)
+    cats_present = {c for c in cats_present if recs.get(c)}
+
+    has_herbicide = "herbicide" in cats_present
+    has_spray_category = bool(
+        cats_present & {"insecticide", "fungicide", "bio_pesticide", "pgr"}
+    )
+
+    # Scan every entry (including overlap_best_matches) for a "short" PHI --
+    # anything with a number <=20 days counts as "harvest is getting close".
+    has_short_phi = False
+    for cat, entries in recs.items():
+        for entry in entries or []:
+            wp = ((entry.get("dosage") or {}).get("waiting_period")) or ""
+            if wp and "not applicable" not in wp.lower():
+                m = _re.search(r"(\d+)", wp)
+                if m and int(m.group(1)) <= 20:
+                    has_short_phi = True
+                    break
+        if has_short_phi:
+            break
+
+    lines = []
+
+    if is_seed:
+        # Seed treatment never gets a MANDI nudge -- crop isn't even sown
+        # yet, harvest is months away, so it would be noise.
+        lines.append(
+            "🌦️ *पुढची पायरी:* पेरणीनंतर बियाण्याला योग्य ओलावा मिळण्यासाठी "
+            "पावसाचा अंदाज आमच्या *हवामान* सेवेतून आधी तपासा."
+        )
+    else:
+        if has_herbicide:
+            lines.append(
+                "🌦️ *पुढची पायरी:* तणनाशक फवारल्यानंतर किमान ६-८ तास पाऊस नसावा "
+                "(नाहीतर औषध वाया जाते) — *हवामान* सेवेतून पावसाचा अंदाज आधी तपासा."
+            )
+        elif has_spray_category:
+            lines.append(
+                "🌦️ *पुढची पायरी:* फवारणीपूर्वी वारा आणि पावसाचा अंदाज आमच्या "
+                "*हवामान* सेवेतून तपासा — योग्य वेळ निवडल्यास औषध वाया जाणार नाही."
+            )
+
+        if has_short_phi:
+            lines.append(
+                "💰 *अजून एक सल्ला:* काढणी जवळ येत आहे — आमच्या *मंडी भाव* सेवेतून "
+                "आधीच जवळच्या मंडीतले भाव तपासून ठेवा, ऐनवेळी धावपळ नको."
+            )
+
+    if not lines:
+        return ""
+
+    return "\n\n" + "\n".join(lines)
+
+
 # ─── FERTILIZER formatter ─────────────────────────────────────────────────────
 
 async def format_fertilizer_response(
@@ -693,6 +664,9 @@ resolved_parameters.crop_display    → शेतकऱ्याने लिह
 resolved_parameters.targets_resolved → कोणत्या कीड/रोगांसाठी शोध घेतला (list)
 resolved_parameters.mapped_from_symptom → true असेल तर लक्षणावरून कीड ओळखली गेली
 resolved_parameters.is_pgr_query    → true असेल तर हे ग्रोथ बूस्टर उत्तर आहे
+resolved_parameters.is_seed_treatment_query → true असेल तर हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे
+  ⚠️ is_pgr_query आणि is_seed_treatment_query कधीही एकत्र true नसतात — दोन्ही वेगळे,
+     एकमेकांशी संबंध नसलेले उत्तर-प्रकार आहेत.
 recommendations                     → हे एक OBJECT आहे, LIST नाही! खालील keys असू शकतात:
   .overlap_best_matches[]           → एकापेक्षा जास्त कीड/रोग असतील — सर्वांवर चालणारी औषधे
   .insecticide[]                    → कीटकनाशके
@@ -700,6 +674,7 @@ recommendations                     → हे एक OBJECT आहे, LIST न
   .fungicide[]                      → बुरशीनाशके
   .herbicide[]                      → तणनाशके
   .pgr[]                            → वाढ नियंत्रक (is_pgr_query=true असताना)
+  .seed_treatment[]                 → बीजप्रक्रिया / पेरणी-वेळचे औषध (is_seed_treatment_query=true असताना)
   (JSON मध्ये जी key PRESENT आहे तीच सांगा — रिकामी key पूर्णपणे skip करा)
 summary.total_options               → एकूण किती पर्याय सापडले
 summary.has_bio_options             → जैविक पर्याय उपलब्ध आहे का
@@ -708,35 +683,37 @@ summary.has_branded_options         → बाजारातील ब्रँ
 ━━━ FIELD MEANINGS — प्रत्येक recommendation entry च्या आत ━━━
 chemical_name            → रासायनिक घटकाचे शास्त्रीय/CIBRC नाव (हेच खरे नाव — बाटलीवर तपासा)
 category                 → insecticide=कीडनाशक | fungicide=बुरशीनाशक |
-                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक
+                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक |
+                            seed_treatment=बीजप्रक्रिया (पेरणीच्या वेळी बियाण्यास लावायचे)
 is_combination_product   → true असेल तर हे दोन घटकांचे मिश्रण आहे — तसे नमूद करा
 covers_all_pests         → true असेल तर सर्व कीड/रोगांवर हे एकच औषध चालते
-pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे
+pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे (seed_treatment साठी सहसा रिकामे — skip करा)
 dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
 dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
 dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
 dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
+                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा
 dosage.application_method → फवारणी/मातीत/बियाण्यावर — कशा प्रकारे वापरायचे
 brands[]                 → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
 companies[]              → या ब्रँड्स बनवणाऱ्या कंपन्या
 has_brand_info           → false असेल तर brands/companies section पूर्णपणे skip करा
 diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त bio_pesticide साठी) — प्रत्येकात name, ingredients, method
 
-━━━ DOSAGE & UNIT RULE (CRITICAL) ━━━
-१. एकर (Acre) ला प्राधान्य: JSON मध्ये 'formulation_dose_per_acre' असल्यास तोच आकडा वापरा आणि पुढे "प्रति एकर" लिहा. ते नसल्यासच 'formulation_dose' वापरून "प्रति हेक्टर" लिहा.
-२. योग्य एकक (Unit): औषधाच्या नावात (chemical_name) खालीलपैकी शब्द असल्यास योग्य एकक लावा:
-   - EC, SC, SL, CS, ZC, ZE, ZW, EW, ME, OD, FS असल्यास आकड्यापुढे "मिली" (ml) लिहा.
-   - WP, WDG, WG, DF, SP, SG, GR, DP असल्यास "ग्राम" (gm) लिहा.
-   - काहीच समजले नाही तर "मिली/ग्राम" लिहा.
-३. पाणी (Water): 'water_dilution_per_acre' असल्यास "[X] लिटर पाणी प्रति एकर" सांगा. नसल्यास 'water_dilution' वापरून "[X] लिटर पाणी प्रति हेक्टर" सांगा.
-४. पंप (Pump): फवारणी (foliar_spray) असल्यास नेहमी "*(१५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*" ही टीप जोडा.
-५. AI Dose: 'ai_dose' कंसात "(सक्रिय घटक: [X])" असे लिहा.
-६. Waiting Period: 'waiting_period' मधील "days" चे भाषांतर "दिवस" करा (उदा. '55 days' -> '५५ दिवस').
+━━━ DOSAGE RULE (safety-critical) ━━━
+dosage.formulation_dose असेल → तेच exact value वापरा (आधी दाखवा — सर्वात प्रॅक्टिकल)
+dosage.ai_dose सुद्धा असेल → "(AI dose: [value])" असे कंसात नंतर दाखवा
+dosage.water_dilution असेल → "[X] लिटर पाण्यात मिसळा"
+dosage.waiting_period असेल → "काढणीपूर्वी [N] थांबा" — नेहमी सांगा
+dosage.application_method असेल → वापर पद्धत ओळ द्या
+सर्व dosage values null/रिकामे असतील → "डोससाठी कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
 
-━━━ TRANSLATION RULE (CRITICAL) ━━━
-JSON मधील pests_covered (उदा. "cynodon_dactylon" -> "हरळी / दुर्वा", "cyperus_rotundus" -> "लव्हाळा"), आणि symptoms हे सर्व १००% मराठीत भाषांतरित करूनच सांगा. इंग्रजी लॅटिन शब्द output मध्ये अजिबात नकोत.
+━━━ BRANDS RULE ━━━
+has_brand_info = false → brands आणि companies section पूर्णपणे skip करा
+has_brand_info = true → brands[] मधून जास्तीत जास्त ३ नावे + companies[] मधून जास्तीत जास्त २ नावे
+brands[] रिकामे पण companies[] असतील → फक्त companies दाखवा
 
-━━━ HEADER LOGIC (resolved_parameters वरून ठरवा) ━━━
+━━━ HEADER LOGIC (resolved_parameters वरून ठरवा — याच क्रमाने तपासा) ━━━
+is_seed_treatment_query = true          → ✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱  (सर्वात आधी तपासा)
 is_pgr_query = true                     → ✅ *[crop_display] ग्रोथ बूस्टर सल्ला* 🌱
 mapped_from_symptom = true              → ✅ *[crop_display] लक्षणावरून ओळखलेली समस्या* 🔍
 recommendations मध्ये फक्त fungicide[]  → ✅ *[crop_display] रोग व्यवस्थापन सल्ला* 🍃
@@ -744,18 +721,65 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 इतर सर्व (कीड/मिश्र)                   → ✅ *[crop_display] पीक संरक्षण सल्ला* 🧪
 
 ━━━ HOW TO ANSWER ━━━
-नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल: हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
-नियम २ — IPM hierarchy: summary.has_bio_options = true असेल तर "🌿 जैविक उपाय आधी वापरून पहा" असा सल्ला द्या.
-नियम ३ — Multiple recommendations: प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या. स्वतः "हा best आहे" म्हणू नका.
-नियम ४ — is_combination_product = true: "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
-नियम ५ — Bifurcation (वर्गीकरण): JSON मध्ये ज्या categories present आहेत, त्यांचे स्वतंत्र headers द्या (खालील साच्यात दिल्याप्रमाणे).
 
-━━━ OUTPUT FORMAT ━━━
+नियम ० — is_seed_treatment_query = true असेल (SPECIAL — बाकी सर्व नियम इथे थांबतात):
+  हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे — शेतात सध्या कोणतीही कीड/रोग नाही, फक्त
+  पेरणीपूर्वी बियाण्यास लावायचे औषध आहे.
+  🎯 सर्व समस्यांसाठी उपयुक्त / IPM जैविक-आधी सल्ला / pests_covered — यातले काहीही दाखवू नका
+  (हे सर्व in-season pest-treatment साठी आहे, seed treatment साठी लागू होत नाही).
+  targets_resolved मध्ये "Seed Treatment" असेल तरी 🐛 "आढळलेली समस्या" line दाखवू नका —
+  त्याऐवजी थेट खाली दिलेला विशेष header + recommendations.seed_treatment[] दाखवा.
+
+नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल (is_seed_treatment_query=false असतानाच लागू):
+  हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
+  नंतर बाकी categories त्यांच्या स्वतःच्या headers खाली दाखवा.
+  overlap मध्ये आधीच दाखवलेले chemical_name पुन्हा खालच्या यादीत छापू नका.
+
+नियम २ — IPM hierarchy (is_seed_treatment_query=false असतानाच लागू):
+  summary.has_bio_options = true असेल → bio_pesticide section आधी दाखवा.
+  "🌿 जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय" असा सल्ला द्या.
+
+नियम ३ — Multiple recommendations (कोणत्याही category मध्ये 2+ items):
+  प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या.
+  स्वतः "हा best आहे" असे कधीही म्हणू नका — सर्व options शेतकऱ्याला द्या.
+  (seed_treatment साठीही हाच नियम लागू — एकापेक्षा जास्त seed-dresser असतील तर सर्व स्वतंत्र दाखवा.)
+
+नियम ४ — diy_homemade_options[] असेल (bio_pesticide entries मध्ये):
+  त्या recommendation च्या खाली "🏡 घरगुती पर्याय:" असे sub-section द्या.
+  name, ingredients/साहित्य, method/कृती थोडक्यात सांगा.
+
+नियम ५ — is_combination_product = true:
+  "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
+
+नियम ६ — targets_resolved यादी (is_seed_treatment_query=false असतानाच लागू):
+  🐛 *आढळलेली समस्या:* [targets_resolved स्वल्पविरामाने] असे सांगा.
+
+नियम ७ — mapped_from_symptom = true:
+  🔍 "(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)" असे सांगा.
+
+━━━ OUTPUT FORMAT — SEED TREATMENT (is_seed_treatment_query = true असेल तेव्हा हाच वापरा) ━━━
+
+✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱
+
+🌱 *पेरणीपूर्वी बियाण्यास लावण्यासाठी:*
+
+[प्रत्येक recommendations.seed_treatment[] entry साठी — 2+ असतील तर *पर्याय १*, *पर्याय २*:]
+🧪 *[पर्याय १ / पर्याय २ ...]:*
+- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - *वापर पद्धत:* [मराठीत — उदा. बियाण्यास चोळून लावा]
+- *डोस:* [DOSAGE RULE नुसार]
+[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
+
+⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
+हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
+
+━━━ OUTPUT FORMAT — NORMAL PEST/PGR (is_seed_treatment_query = false असेल तेव्हा हाच वापरा) ━━━
 
 [HEADER LOGIC नुसार:]
 ✅ *[crop_display] [योग्य title]* [emoji]
 
-🐛 *आढळलेली समस्या:* [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
+🐛 *आढळलेली समस्या:* [targets_resolved — स्वल्पविरामाने]
 
 [mapped_from_symptom = true असेल:]
 🔍 *(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)*
@@ -764,60 +788,31 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 🌿 *IPM सल्ला:* जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय.
 
 [overlap_best_matches[] रिकामे नसेल:]
-🎯 *सर्व समस्यांसाठी उपयुक्त (All-in-One):*
-[त्यातील पर्याय खालील साच्यानुसार द्या]
+🎯 *सर्व समस्यांसाठी उपयुक्त:*
+[प्रत्येक overlap entry साठी recommendation block — खाली पहा]
 
-[पुढील प्रत्येक Category जर JSON मध्ये PRESENT असेल तरच त्याचे Header आणि त्याखालील पर्याय द्या:]
-
-[जर recommendations.seed_treatment असेल:]
-🛡️ *बीजप्रक्रिया (Seed Treatment):*
-[त्यातील पर्याय १, पर्याय २...]
-
-[जर recommendations.bio_pesticide असेल:]
-🌿 *जैविक उपाय (Bio-Pesticides):*
-[त्यातील पर्याय १, पर्याय २...]
-
-[जर recommendations.herbicide असेल:]
-🌿 *तणनाशक (Weedicides):*
-[त्यातील पर्याय १, पर्याय २...]
-
-[जर recommendations.fungicide असेल:]
-🍃 *बुरशीनाशक (Fungicides):*
-[त्यातील पर्याय १, पर्याय २...]
-
-[जर recommendations.insecticide असेल:]
-🐛 *कीटकनाशक (Insecticides):*
-[त्यातील पर्याय १, पर्याय २...]
-
-[जर recommendations.pgr असेल:]
-🌱 *वाढ नियंत्रक / टॉनिक (PGR):*
-[त्यातील पर्याय १, पर्याय २...]
-
-🧪 *[पर्याय १ / पर्याय २ ...] साचा:*
+[प्रत्येक category साठी (जे present आहे — bio_pesticide आधी, नंतर insecticide/fungicide/herbicide/pgr):]
+🧪 *[पर्याय १ / पर्याय २ ...] — [category मराठीत]:*
 - *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
 [has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत]
-- *डोस:* [formulation_dose_per_acre किंवा formulation_dose] [unit: मिली/ग्राम] [प्रति एकर / प्रति हेक्टर] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
-[water_dilution_per_acre किंवा water_dilution:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर] *(उदा. १५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*
-[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
-[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
+- *डोस:* [DOSAGE RULE नुसार — formulation_dose आधी, ai_dose कंसात]
+[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
+[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value]
+[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — स्वल्पविरामाने]
 [diy_homemade_options[] — bio_pesticide साठी:]
   🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा. लेबलवरील सूचना कायद्याने बंधनकारक आहेत.
+⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE
+(हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा. लेबलवरील सूचना कायद्याने बंधनकारक आहेत.
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 ━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
-- DOSE: dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका.
-- DOSE MATH: dosage.formulation_dose_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करू नका.
-- UNITS: प्रति हेक्टर किंवा प्रति एकर आकडा 'मिली' किंवा 'ग्राम' एकक न सांगता कधीही देऊ नका.
-- BRANDS: has_brand_info = false → brands/companies section पूर्णपणे skip करा. नवे नाव कधीही जोडू नका.
-- BIFURCATION: JSON मध्ये नसलेली कोणतीही category (उदा. fungicide नसेल तर) output मध्ये दाखवू नका.
-- JSON key नावे output मध्ये छापू नका. OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका.
-
-
+DOSE:
+- dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका
+- dosage.formulation_dose / dosage.ai_dose फक्त JSON मधील exact values — round करू नका
 
 BRANDS:
 - has_brand_info = false → brands/companies section पूर्णपणे skip करा
@@ -825,14 +820,28 @@ BRANDS:
 - companies[] JSON मधील यादीतीलच — max २ दाखवा
 
 STRUCTURE:
-- recommendations OBJECT आहे — overlap_best_matches, insecticide, bio_pesticide इत्यादी sub-keys आहेत
+- recommendations OBJECT आहे — overlap_best_matches, insecticide, bio_pesticide, seed_treatment इत्यादी sub-keys आहेत
 - JSON मध्ये नसलेली कोणतीही category output मध्ये दाखवू नका
 - JSON key नावे (recommendations, dosage, chemical_name इ.) output मध्ये छापू नका
 - OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका — त्या जागी actual data भरा
 - overlap मध्ये दाखवलेले chemical पुन्हा category section मध्ये छापू नका
-- JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
+- JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा
+- is_seed_treatment_query = true असेल तर वरची SEED TREATMENT OUTPUT FORMAT template वापरा —
+  NORMAL PEST/PGR template कधीही मिसळू नका (उदा. seed treatment output मध्ये कधीही PHI/waiting_period
+  किंवा pests_covered किंवा IPM/overlap section दाखवू नका)
+- शेवटी कोणतेही "पुढची पायरी" / हवामान / मंडी सुचवण्याचे वाक्य स्वतःहून लिहू नका —
+  ते वेगळ्या deterministic logic ने नंतर जोडले जाईल, तुम्ही ते JSON मध्ये नसल्यामुळे
+  लिहू नका (JSON मध्ये तसाही हा field नाहीच)"""
 
-    return await _call_gemini(prompt)
+    formatted = await _call_gemini(prompt)
+
+    # Deterministic cross-service nudge (weather/mandi) -- computed from the
+    # raw JSON in Python, appended after Gemini's output rather than left to
+    # Gemini to invent. See _cross_service_suggestions() docstring for the
+    # exact relations used.
+    suggestion = _cross_service_suggestions(data)
+
+    return formatted + suggestion
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
@@ -857,8 +866,6 @@ async def format_response_for_whatsapp(
             return _error_response("सध्या डेटा उपलब्ध नाही. सर्व्हर काही वेळात पुन्हा चालू होईल.")
         if error_type in ("BAD_REQUEST", "CROP_NOT_FOUND"):
             return _error_response(f"चुकीची माहिती पाठवली गेली: {error_reason}")
-        if error_type in ("NO_MARKETS_IN_RADIUS",):
-            return _error_response(f"⚠️ {error_reason}")
         return _error_response("तांत्रिक अडचणीमुळे माहिती मिळवता आली नाही.")
 
     # ── Endpoint-level no_match ───────────────────────────────────────────
