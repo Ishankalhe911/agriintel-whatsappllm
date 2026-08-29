@@ -543,6 +543,107 @@ JSON मध्ये qty_quintals, min_price/max_price, transport_cost_est अ�
 - JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
 
     return await _call_gemini(prompt)
+# ─── Cross-service recommendation engine (deterministic, non-LLM) ────────────
+# NOTE: this runs in plain Python on the raw JSON, NOT inside the Gemini
+# prompt -- a recommendation like "check weather before spraying" should
+# always be consistent with what's actually in the data, never something
+# Gemini might phrase differently or skip on a given call. Keeping it
+# rule-based means the same input always produces the same suggestion.
+
+import re as _re
+
+
+def _cross_service_suggestions(data: dict[str, Any]) -> str:
+    """
+    Looks at the crop-protection response and decides whether to nudge the
+    farmer toward the *weather* and/or *mandi* services -- based on real
+    relationships between what was recommended and what those services
+    answer, not a generic "try our other services" line.
+
+    Relations used:
+      - Seed treatment (sowing intent) -> WEATHER
+        Germination needs the right rain/moisture window right after
+        sowing -- this is exactly what /weather-risk's daily_preview and
+        net_water_balance_7d answer.
+      - Herbicide present -> WEATHER
+        Herbicides need a rain-free window (roughly 6-8 hrs) after
+        application to be absorbed -- rain before that washes them off
+        and wastes the spray.
+      - Insecticide / fungicide / bio_pesticide / PGR present (i.e.
+        anything that gets SPRAYED) -> WEATHER
+        Wind >20km/h or rain <2mm right after spraying wastes the
+        chemical and risks drift -- /weather-risk's
+        optimal_drone_spray_dates / wind_risk_days answer this directly.
+      - A short-ish waiting period (PHI, <=20 days) is present on any
+        recommended chemical -> MANDI
+        A known harvest countdown is the moment to start checking sale
+        price/nearby mandis ahead of time, not scramble right after
+        harvest.
+
+    Herbicide + short PHI can both fire -- e.g. an herbicide near harvest
+    on a fast crop -- so this can return both suggestions, but always at
+    most one WEATHER line and one MANDI line (never duplicated).
+    """
+    resolved = data.get("resolved_parameters", {}) or {}
+    recs = data.get("recommendations", {}) or {}
+    is_seed = bool(resolved.get("is_seed_treatment_query"))
+
+    cats_present = set(recs.keys()) - {"overlap_best_matches"}
+    # Only count categories that actually have entries (empty lists don't count)
+    cats_present = {c for c in cats_present if recs.get(c)}
+
+    has_herbicide = "herbicide" in cats_present
+    has_spray_category = bool(
+        cats_present & {"insecticide", "fungicide", "bio_pesticide", "pgr"}
+    )
+
+    # Scan every entry (including overlap_best_matches) for a "short" PHI --
+    # anything with a number <=20 days counts as "harvest is getting close".
+    has_short_phi = False
+    for cat, entries in recs.items():
+        for entry in entries or []:
+            wp = ((entry.get("dosage") or {}).get("waiting_period")) or ""
+            if wp and "not applicable" not in wp.lower():
+                m = _re.search(r"(\d+)", wp)
+                if m and int(m.group(1)) <= 20:
+                    has_short_phi = True
+                    break
+        if has_short_phi:
+            break
+
+    lines = []
+
+    if is_seed:
+        # Seed treatment never gets a MANDI nudge -- crop isn't even sown
+        # yet, harvest is months away, so it would be noise.
+        lines.append(
+            "🌦️ *पुढची पायरी:* पेरणीनंतर बियाण्याला योग्य ओलावा मिळण्यासाठी "
+            "पावसाचा अंदाज आमच्या *हवामान* सेवेतून आधी तपासा."
+        )
+    else:
+        if has_herbicide:
+            lines.append(
+                "🌦️ *पुढची पायरी:* तणनाशक फवारल्यानंतर किमान ६-८ तास पाऊस नसावा "
+                "(नाहीतर औषध वाया जाते) — *हवामान* सेवेतून पावसाचा अंदाज आधी तपासा."
+            )
+        elif has_spray_category:
+            lines.append(
+                "🌦️ *पुढची पायरी:* फवारणीपूर्वी वारा आणि पावसाचा अंदाज आमच्या "
+                "*हवामान* सेवेतून तपासा — योग्य वेळ निवडल्यास औषध वाया जाणार नाही."
+            )
+
+        if has_short_phi:
+            lines.append(
+                "💰 *अजून एक सल्ला:* काढणी जवळ येत आहे — आमच्या *मंडी भाव* सेवेतून "
+                "आधीच जवळच्या मंडीतले भाव तपासून ठेवा, ऐनवेळी धावपळ नको."
+            )
+
+    if not lines:
+        return ""
+
+    return "\n\n" + "\n".join(lines)
+
+
 # ─── FERTILIZER formatter ─────────────────────────────────────────────────────
 
 async def format_fertilizer_response(
@@ -727,9 +828,20 @@ STRUCTURE:
 - JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा
 - is_seed_treatment_query = true असेल तर वरची SEED TREATMENT OUTPUT FORMAT template वापरा —
   NORMAL PEST/PGR template कधीही मिसळू नका (उदा. seed treatment output मध्ये कधीही PHI/waiting_period
-  किंवा pests_covered किंवा IPM/overlap section दाखवू नका)"""
+  किंवा pests_covered किंवा IPM/overlap section दाखवू नका)
+- शेवटी कोणतेही "पुढची पायरी" / हवामान / मंडी सुचवण्याचे वाक्य स्वतःहून लिहू नका —
+  ते वेगळ्या deterministic logic ने नंतर जोडले जाईल, तुम्ही ते JSON मध्ये नसल्यामुळे
+  लिहू नका (JSON मध्ये तसाही हा field नाहीच)"""
 
-    return await _call_gemini(prompt)
+    formatted = await _call_gemini(prompt)
+
+    # Deterministic cross-service nudge (weather/mandi) -- computed from the
+    # raw JSON in Python, appended after Gemini's output rather than left to
+    # Gemini to invent. See _cross_service_suggestions() docstring for the
+    # exact relations used.
+    suggestion = _cross_service_suggestions(data)
+
+    return formatted + suggestion
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
