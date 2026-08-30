@@ -105,7 +105,21 @@ async def _call_gemini(user_prompt: str) -> str:
                 max_output_tokens=3000,
             ),
         )
-        return response.text.strip()
+        reply = response.text.strip()
+        
+        # 🚀 META API 4096 CHAR LIMIT FAILSAFE
+        if len(reply) > 4000:
+            logger.warning(f"[Formatter] Truncating long response: {len(reply)} chars")
+            # Find the last clean paragraph break before 3800 characters
+            cut_index = reply.rfind('\n\n', 0, 3800)
+            if cut_index == -1:
+                cut_index = 3800  # Hard cut if no paragraph break is found
+            
+            # Slice cleanly and add a polite warning
+            reply = reply[:cut_index] + "\n\n⚠️ *(संदेश खूप मोठा असल्याने काही पर्याय वगळले आहेत. अधिक माहितीसाठी कृषी सेवा केंद्रात संपर्क करा.)*"
+            
+        return reply
+
     except ValueError as e:
         logger.error(f"[Formatter] Config error: {e}")
         return _error_response("तांत्रिक अडचण: API key उपलब्ध नाही.")
@@ -673,6 +687,49 @@ JSON मध्ये qty_quintals, min_price/max_price, transport_cost_est अ�
 - JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
 
     return await _call_gemini(prompt)
+# ─── Cross-service recommendation engine (deterministic, non-LLM) ────────────
+import re as _re
+
+def _cross_service_suggestions(data: dict[str, Any]) -> str:
+    resolved = data.get("resolved_parameters", {}) or {}
+    recs = data.get("recommendations", {}) or {}
+    is_seed = bool(resolved.get("is_seed_treatment_query"))
+
+    cats_present = set(recs.keys()) - {"overlap_best_matches"}
+    cats_present = {c for c in cats_present if recs.get(c)}
+
+    has_herbicide = "herbicide" in cats_present
+    has_spray_category = bool(cats_present & {"insecticide", "fungicide", "bio_pesticide", "pgr"})
+
+    has_short_phi = False
+    for cat, entries in recs.items():
+        for entry in entries or []:
+            wp = ((entry.get("dosage") or {}).get("waiting_period")) or ""
+            if wp and "not applicable" not in wp.lower():
+                m = _re.search(r"(\d+)", wp)
+                if m and int(m.group(1)) <= 20:
+                    has_short_phi = True
+                    break
+        if has_short_phi:
+            break
+
+    lines = []
+
+    if is_seed:
+        lines.append("🌦️ *पुढची पायरी:* पेरणीनंतर बियाण्याला योग्य ओलावा मिळण्यासाठी पावसाचा अंदाज आमच्या *हवामान* सेवेतून आधी तपासा.")
+    else:
+        if has_herbicide:
+            lines.append("🌦️ *पुढची पायरी:* तणनाशक फवारल्यानंतर किमान ६-८ तास पाऊस नसावा (नाहीतर औषध वाया जाते) — *हवामान* सेवेतून पावसाचा अंदाज आधी तपासा.")
+        elif has_spray_category:
+            lines.append("🌦️ *पुढची पायरी:* फवारणीपूर्वी वारा आणि पावसाचा अंदाज आमच्या *हवामान* सेवेतून तपासा — योग्य वेळ निवडल्यास औषध वाया जाणार नाही.")
+
+        if has_short_phi:
+            lines.append("💰 *अजून एक सल्ला:* काढणी जवळ येत आहे — आमच्या *मंडी भाव* सेवेतून आधीच जवळच्या मंडीतले भाव तपासून ठेवा, ऐनवेळी धावपळ नको.")
+
+    if not lines:
+        return ""
+
+    return "\n\n" + "\n".join(lines)
 # ─── FERTILIZER formatter ─────────────────────────────────────────────────────
 
 async def format_fertilizer_response(
@@ -693,6 +750,8 @@ resolved_parameters.crop_display    → शेतकऱ्याने लिह
 resolved_parameters.targets_resolved → कोणत्या कीड/रोगांसाठी शोध घेतला (list)
 resolved_parameters.mapped_from_symptom → true असेल तर लक्षणावरून कीड ओळखली गेली
 resolved_parameters.is_pgr_query    → true असेल तर हे ग्रोथ बूस्टर उत्तर आहे
+resolved_parameters.is_seed_treatment_query → true असेल तर हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे
+  ⚠️ is_pgr_query आणि is_seed_treatment_query कधीही एकत्र true नसतात — दोन्ही वेगळे आहेत.
 recommendations                     → हे एक OBJECT आहे, LIST नाही! खालील keys असू शकतात:
   .overlap_best_matches[]           → एकापेक्षा जास्त कीड/रोग असतील — सर्वांवर चालणारी औषधे
   .insecticide[]                    → कीटकनाशके
@@ -700,7 +759,7 @@ recommendations                     → हे एक OBJECT आहे, LIST न
   .fungicide[]                      → बुरशीनाशके
   .herbicide[]                      → तणनाशके
   .pgr[]                            → वाढ नियंत्रक (is_pgr_query=true असताना)
-  (JSON मध्ये जी key PRESENT आहे तीच सांगा — रिकामी key पूर्णपणे skip करा)
+  .seed_treatment[]                 → बीजप्रक्रिया / पेरणी-वेळचे औषध (is_seed_treatment_query=true असताना)
 summary.total_options               → एकूण किती पर्याय सापडले
 summary.has_bio_options             → जैविक पर्याय उपलब्ध आहे का
 summary.has_branded_options         → बाजारातील ब्रँड नावे उपलब्ध आहेत का
@@ -708,19 +767,21 @@ summary.has_branded_options         → बाजारातील ब्रँ
 ━━━ FIELD MEANINGS — प्रत्येक recommendation entry च्या आत ━━━
 chemical_name            → रासायनिक घटकाचे शास्त्रीय/CIBRC नाव (हेच खरे नाव — बाटलीवर तपासा)
 category                 → insecticide=कीडनाशक | fungicide=बुरशीनाशक |
-                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक
+                            herbicide=तणनाशक | bio_pesticide=जैविक | pgr=वाढ नियंत्रक |
+                            seed_treatment=बीजप्रक्रिया (पेरणीच्या वेळी बियाण्यास लावायचे)
 is_combination_product   → true असेल तर हे दोन घटकांचे मिश्रण आहे — तसे नमूद करा
 covers_all_pests         → true असेल तर सर्व कीड/रोगांवर हे एकच औषध चालते
-pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे
+pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे (seed_treatment साठी सहसा रिकामे — skip करा)
 dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
 dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
 dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
 dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
+                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा
 dosage.application_method → फवारणी/मातीत/बियाण्यावर — कशा प्रकारे वापरायचे
 brands[]                 → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
 companies[]              → या ब्रँड्स बनवणाऱ्या कंपन्या
 has_brand_info           → false असेल तर brands/companies section पूर्णपणे skip करा
-diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त bio_pesticide साठी) — प्रत्येकात name, ingredients, method
+diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त bio_pesticide साठी)
 
 ━━━ DOSAGE & UNIT RULE (CRITICAL) ━━━
 १. एकर (Acre) ला प्राधान्य: JSON मध्ये 'formulation_dose_per_acre' असल्यास तोच आकडा वापरा आणि पुढे "प्रति एकर" लिहा. ते नसल्यासच 'formulation_dose' वापरून "प्रति हेक्टर" लिहा.
@@ -729,14 +790,19 @@ diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त b
    - WP, WDG, WG, DF, SP, SG, GR, DP असल्यास "ग्राम" (gm) लिहा.
    - काहीच समजले नाही तर "मिली/ग्राम" लिहा.
 ३. पाणी (Water): 'water_dilution_per_acre' असल्यास "[X] लिटर पाणी प्रति एकर" सांगा. नसल्यास 'water_dilution' वापरून "[X] लिटर पाणी प्रति हेक्टर" सांगा.
-४. पंप (Pump): फवारणी (foliar_spray) असल्यास नेहमी "*(१५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*" ही टीप जोडा.
+४. पंप (Pump): JSON मध्ये 'formulation_dose_per_15L_pump' असल्यास "*(१५ लिटर पंपासाठी: [value] मिली/ग्राम)*" असे ठळकपणे सांगा. हे नसेल तरच "*(१५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*" ही टीप जोडा.
 ५. AI Dose: 'ai_dose' कंसात "(सक्रिय घटक: [X])" असे लिहा.
 ६. Waiting Period: 'waiting_period' मधील "days" चे भाषांतर "दिवस" करा (उदा. '55 days' -> '५५ दिवस').
 
 ━━━ TRANSLATION RULE (CRITICAL) ━━━
 JSON मधील pests_covered (उदा. "cynodon_dactylon" -> "हरळी / दुर्वा", "cyperus_rotundus" -> "लव्हाळा"), आणि symptoms हे सर्व १००% मराठीत भाषांतरित करूनच सांगा. इंग्रजी लॅटिन शब्द output मध्ये अजिबात नकोत.
 
-━━━ HEADER LOGIC (resolved_parameters वरून ठरवा) ━━━
+━━━ BRANDS RULE ━━━
+has_brand_info = false → brands आणि companies section पूर्णपणे skip करा
+has_brand_info = true → brands[] मधून जास्तीत जास्त ३ नावे + companies[] मधून जास्तीत जास्त २ नावे
+
+━━━ HEADER LOGIC (resolved_parameters वरून ठरवा — याच क्रमाने तपासा) ━━━
+is_seed_treatment_query = true          → ✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱
 is_pgr_query = true                     → ✅ *[crop_display] ग्रोथ बूस्टर सल्ला* 🌱
 mapped_from_symptom = true              → ✅ *[crop_display] लक्षणावरून ओळखलेली समस्या* 🔍
 recommendations मध्ये फक्त fungicide[]  → ✅ *[crop_display] रोग व्यवस्थापन सल्ला* 🍃
@@ -744,13 +810,34 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 इतर सर्व (कीड/मिश्र)                   → ✅ *[crop_display] पीक संरक्षण सल्ला* 🧪
 
 ━━━ HOW TO ANSWER ━━━
+नियम ० — is_seed_treatment_query = true असेल (SPECIAL — बाकी सर्व नियम इथे थांबतात):
+  हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे — शेतात सध्या कोणतीही कीड/रोग नाही.
+  🎯 सर्व समस्यांसाठी उपयुक्त / IPM जैविक-आधी सल्ला / pests_covered — यातले काहीही दाखवू नका.
+  थेट खाली दिलेला विशेष header + recommendations.seed_treatment[] दाखवा.
 नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल: हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
 नियम २ — IPM hierarchy: summary.has_bio_options = true असेल तर "🌿 जैविक उपाय आधी वापरून पहा" असा सल्ला द्या.
 नियम ३ — Multiple recommendations: प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या. स्वतः "हा best आहे" म्हणू नका.
 नियम ४ — is_combination_product = true: "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
 नियम ५ — Bifurcation (वर्गीकरण): JSON मध्ये ज्या categories present आहेत, त्यांचे स्वतंत्र headers द्या (खालील साच्यात दिल्याप्रमाणे).
 
-━━━ OUTPUT FORMAT ━━━
+━━━ OUTPUT FORMAT — SEED TREATMENT (is_seed_treatment_query = true असेल तेव्हा हाच वापरा) ━━━
+
+✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱
+
+🌱 *पेरणीपूर्वी बियाण्यास लावण्यासाठी:*
+
+[प्रत्येक recommendations.seed_treatment[] entry साठी — 2+ असतील तर *पर्याय १*, *पर्याय २*:]
+🧪 *[पर्याय १ / पर्याय २ ...]:*
+- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - *वापर पद्धत:* [मराठीत — उदा. बियाण्यास चोळून लावा]
+- *डोस:* [DOSAGE RULE नुसार]
+[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
+
+⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
+हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
+
+━━━ OUTPUT FORMAT — NORMAL PEST/PGR (is_seed_treatment_query = false असेल तेव्हा हाच वापरा) ━━━
 
 [HEADER LOGIC नुसार:]
 ✅ *[crop_display] [योग्य title]* [emoji]
@@ -768,10 +855,6 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 [त्यातील पर्याय खालील साच्यानुसार द्या]
 
 [पुढील प्रत्येक Category जर JSON मध्ये PRESENT असेल तरच त्याचे Header आणि त्याखालील पर्याय द्या:]
-
-[जर recommendations.seed_treatment असेल:]
-🛡️ *बीजप्रक्रिया (Seed Treatment):*
-[त्यातील पर्याय १, पर्याय २...]
 
 [जर recommendations.bio_pesticide असेल:]
 🌿 *जैविक उपाय (Bio-Pesticides):*
@@ -797,42 +880,40 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 - *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
 [has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत]
-- *डोस:* [formulation_dose_per_acre किंवा formulation_dose] [unit: मिली/ग्राम] [प्रति एकर / प्रति हेक्टर] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
-[water_dilution_per_acre किंवा water_dilution:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर] *(उदा. १५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*
+- *डोस:* [formulation_dose_per_acre किंवा formulation_dose] [unit: मिली/ग्राम] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump] मिली/ग्राम)*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
+[water_dilution_per_acre किंवा water_dilution:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
 [dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
 [pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
 [diy_homemade_options[] — bio_pesticide साठी:]
   🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा. लेबलवरील सूचना कायद्याने बंधनकारक आहेत.
+⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा.
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
 
 ━━━ CRITICAL ANTI-HALLUCINATION RULES (safety-critical — एकही तोडू नका) ━━━
 - DOSE: dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका.
-- DOSE MATH: dosage.formulation_dose_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करू नका.
+- NO ROUNDING: dosage.formulation_dose, dosage.ai_dose, किंवा कोणतेही डोस फक्त JSON मधील EXACT values वापरा — round off करू नका.
+- NO MATH: dosage.formulation_dose_per_acre किंवा water_dilution_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करण्याची चूक करू नका.
 - UNITS: प्रति हेक्टर किंवा प्रति एकर आकडा 'मिली' किंवा 'ग्राम' एकक न सांगता कधीही देऊ नका.
 - BRANDS: has_brand_info = false → brands/companies section पूर्णपणे skip करा. नवे नाव कधीही जोडू नका.
 - BIFURCATION: JSON मध्ये नसलेली कोणतीही category (उदा. fungicide नसेल तर) output मध्ये दाखवू नका.
+- LENGTH LIMIT (CRITICAL): WhatsApp च्या 4000 अक्षरांच्या मर्यादेमुळे, प्रत्येक Category मध्ये (उदा. कीटकनाशक) जास्तीत जास्त ३ च पर्याय (Options) दाखवा. JSON मध्ये ५ असले तरी फक्त पहिले ३ द्या आणि उर्वरित वगळा.
 - JSON key नावे output मध्ये छापू नका. OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका.
+- is_seed_treatment_query = true असेल तर वरची SEED TREATMENT OUTPUT FORMAT template वापरा.
+- शेवटी कोणतेही "पुढची पायरी" / हवामान / मंडी सुचवण्याचे वाक्य स्वतःहून लिहू नका.
+"""
 
+    formatted = await _call_gemini(prompt)
 
+    # Deterministic cross-service nudge (weather/mandi) -- computed from the
+    # raw JSON in Python, appended after Gemini's output rather than left to
+    # Gemini to invent. See _cross_service_suggestions() docstring for the
+    # exact relations used.
+    suggestion = _cross_service_suggestions(data)
 
-BRANDS:
-- has_brand_info = false → brands/companies section पूर्णपणे skip करा
-- brands[] JSON मधील यादीतीलच — नवे नाव कधीही जोडू नका
-- companies[] JSON मधील यादीतीलच — max २ दाखवा
-
-STRUCTURE:
-- recommendations OBJECT आहे — overlap_best_matches, insecticide, bio_pesticide इत्यादी sub-keys आहेत
-- JSON मध्ये नसलेली कोणतीही category output मध्ये दाखवू नका
-- JSON key नावे (recommendations, dosage, chemical_name इ.) output मध्ये छापू नका
-- OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका — त्या जागी actual data भरा
-- overlap मध्ये दाखवलेले chemical पुन्हा category section मध्ये छापू नका
-- JSON मध्ये नसलेला कोणताही section पूर्णपणे skip करा"""
-
-    return await _call_gemini(prompt)
+    return formatted + suggestion
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
