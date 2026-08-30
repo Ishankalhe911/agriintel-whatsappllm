@@ -148,6 +148,9 @@ Does NOT handle at all:
 - Insurance / vima → redirect_key: "insurance"
 - Government schemes / yojana → redirect_key: "scheme"
 - Anything non-agricultural → redirect_key: "general"
+BUT A CRITICAL RULE FOR SEEDS VS. SEED TREATMENT:
+- If the farmer asks about buying seeds, seed varieties, or availability (e.g., "mala soyabean che beeyane pahije"), mark it as `is_handled: False` with `redirect_key: "seeds"`.
+- HOWEVER, if the farmer asks for "Seed Treatment", "beej prakriya", or medicine to apply BEFORE sowing (e.g., "rice lavnyacha aadhi kahi karava lagel ka?"), this is a valid Crop Protection query! You MUST mark it as `is_handled: True` and let it pass through.
 
 Farmer message: "{message}"
 
