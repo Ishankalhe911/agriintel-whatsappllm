@@ -209,7 +209,9 @@ async def call_weather_risk(
         if response.status_code == 200:
             logger.info("[x402] ✅ weather-risk payment settled")
             asyncio.create_task(_check_treasury(float_address))
-            return response.json()
+            data = response.json()
+            data["x402_tx_id"] = response.headers.get("x-transaction-hash") or response.headers.get("x-tx-id")
+            return data
 
         elif response.status_code == 400:
             logger.warning(f"[x402] weather-risk 400: {response.text}")
@@ -291,7 +293,9 @@ async def call_mandi_optimize(
         if response.status_code == 200:
             logger.info("[x402] ✅ mandi-optimize payment settled")
             asyncio.create_task(_check_treasury(float_address))
-            return response.json()
+            data = response.json()
+            data["x402_tx_id"] = response.headers.get("x-transaction-hash") or response.headers.get("x-tx-id")
+            return data
 
         elif response.status_code == 400:
             logger.warning(f"[x402] mandi-optimize 400: {response.text}")
@@ -366,7 +370,9 @@ async def call_fertilizer(
         if response.status_code == 200:
             logger.info("[x402] ✅ fertilizer-info payment settled")
             asyncio.create_task(_check_treasury(float_address))
-            return response.json()
+            data = response.json()
+            data["x402_tx_id"] = response.headers.get("x-transaction-hash") or response.headers.get("x-tx-id")
+            return data
 
         elif response.status_code == 400:
             logger.warning(f"[x402] fertilizer-info 400: {response.text}")

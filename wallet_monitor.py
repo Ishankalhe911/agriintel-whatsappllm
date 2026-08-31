@@ -152,6 +152,7 @@ async def handle_payment_event(
     event: dict,
     store: SessionStore,
     consent_logger=None,
+    wallet_db=None,
 ) -> None:
     """
     Called by main.py after webhook verification and parsing.
@@ -164,6 +165,7 @@ async def handle_payment_event(
             "amount_paid":     int,   # paise
             "phone":           str | None,
             "service_type":    str | None,
+            
         }
 
     store: SessionStore instance (shared singleton from main.py)
@@ -215,6 +217,8 @@ async def handle_payment_event(
             amount_paid=amount_paid,
             store=store,
             consent_logger=consent_logger,
+            wallet_db=wallet_db,  
+            event=event,
         )
 
     elif event_type == "expired":
@@ -252,6 +256,8 @@ async def _handle_paid(
     amount_paid: int,
     store: SessionStore,
     consent_logger,
+    wallet_db,               
+    event: dict,
 ) -> None:
     """
     Idempotent: checks payment_status before processing.
@@ -320,7 +326,10 @@ async def _handle_paid(
                     phone=phone,
                     lang=lang,
                     store=store,
-                    delay_seconds=300,   # 5 minutes
+                    delay_seconds=300,
+                    wallet_db=wallet_db,     
+                    event=event,             
+                    amount_paid=amount_paid,   
                 )
             )
         elif error_type == "SESSION_INCOMPLETE":
@@ -338,6 +347,30 @@ async def _handle_paid(
         else:
             await send_text(phone, _msg("delivery_error", lang))
         return
+
+    
+    payment_id = event.get("payment_id") # Must be added to razorpay_handler!
+    order_id = event.get("order_id")     # Must be added to razorpay_handler!
+    x402_tx = result.get("x402_tx_id")   # Must be added to delivery.py!
+    
+    success = wallet_db.grant_credits_and_log(
+        phone=phone,
+        package_id="TIER_5_SINGLE_QUERY", 
+        credits_to_add=1,
+        payment_source="WHATSAPP_UPI",
+        fiat_amount=amount_paid / 100.0, # Convert paise to INR
+        session_id=session_id,
+        rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured"},
+        x402_data={"tx_id": x402_tx, "payer": "TREASURY_WALLET", "payto": "FACILITATOR_WALLET", "amount_atomic": "40000", "network": "algorand_mainnet"}
+    )
+    
+    if success:
+        # Since this is a pay-per-query, we immediately consume the 1 credit they just bought
+        wallet_db.deduct_credit(phone)
+        logger.info(f"[WalletMonitor] ✅ Financial Audit Log written for {session_id}")
+    else:
+        logger.error(f"[WalletMonitor] 🚨 FAILED TO WRITE FINANCIAL LOG for {session_id}")
+  
 
     # ── Format and send to farmer ──────────────────────────────────────────
     try:
@@ -501,6 +534,9 @@ async def _retry_delivery_after_delay(
     lang: str,
     store: SessionStore,
     delay_seconds: int = 300,
+    wallet_db=None,          # 🚀 ACCEPTED HERE
+    event: dict = None,      # 🚀 ACCEPTED HERE
+    amount_paid: int = 0,    # 🚀 ACCEPTED HERE
 ) -> None:
     """
     Background task — waits delay_seconds then retries delivery once.
@@ -550,6 +586,39 @@ async def _retry_delivery_after_delay(
         )
         await send_text(phone, _msg("delivery_error", lang))
         return
+
+    # 🚀 ========================================================== 🚀
+    # 🚀 FINANCIAL AUDIT LOGGING (For Successful Retries)
+    # 🚀 ========================================================== 🚀
+    if wallet_db and event:
+        payment_id = event.get("payment_id") 
+        order_id = event.get("order_id")     
+        x402_tx = result.get("x402_tx_id")   
+        
+        success = wallet_db.grant_credits_and_log(
+            phone=phone,
+            package_id="TIER_5_SINGLE_QUERY", 
+            credits_to_add=1,
+            payment_source="WHATSAPP_UPI",
+            fiat_amount=amount_paid / 100.0, 
+            session_id=session_id,
+            rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured"},
+            x402_data={
+                "tx_id": x402_tx, 
+                "payer": "TREASURY_WALLET", 
+                "payto": "FACILITATOR_WALLET", 
+                "amount_atomic": "40000", 
+                "network": "algorand_mainnet",
+                "status": "SETTLED"
+            }
+        )
+        
+        if success:
+            wallet_db.deduct_credit(phone)
+            logger.info(f"[WalletMonitor] ✅ Financial Audit Log written for RETRY session {session_id}")
+        else:
+            logger.error(f"[WalletMonitor] 🚨 FAILED TO WRITE FINANCIAL LOG for RETRY session {session_id}")
+    # 🚀 ========================================================== 🚀
 
     try:
         formatted = await format_response_for_whatsapp(

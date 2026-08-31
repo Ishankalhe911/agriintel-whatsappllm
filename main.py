@@ -53,7 +53,7 @@ import os
 from typing import Optional, Tuple
 from datetime import date, timedelta
 import httpx
-
+from wallet_db import WalletDB
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -96,6 +96,7 @@ logger = logging.getLogger(__name__)
 
 store          = SessionStore()
 consent_logger = ConsentLogger()
+wallet_db      = WalletDB()   
 
 # ─── DPDP data deletion triggers (all variants a farmer might type) ───────────
 # Site privacy page promises: "message 'delete my data' to withdraw consent"
@@ -174,6 +175,7 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown — close DB connection pool cleanly
     consent_logger.close()
+    wallet_db.close()
     logger.info("🌾 AgriIntel WhatsApp agent shut down cleanly")
 
 
@@ -950,6 +952,7 @@ async def razorpay_webhook(request: Request):
             event          = event,
             store          = store,
             consent_logger = consent_logger,
+            wallet_db      = wallet_db,
         )
     )
 

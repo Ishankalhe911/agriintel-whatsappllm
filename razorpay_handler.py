@@ -229,48 +229,41 @@ def verify_webhook_signature(
 
 def parse_webhook_event(payload: dict) -> Optional[dict]:
     """
-    Normalizes a Razorpay webhook into:
-        {
-            "event":           "paid" | "expired" | "cancelled",
-            "session_id":      str,       # reference_id → session_store.get_session()
-            "payment_link_id": str,
-            "amount_paid":     int,       # paise (0 for expired/cancelled)
-            "phone":           str|None,  # from notes, backup identifier
-            "service_type":    str|None,  # from notes
-        }
-
-    Returns None for unhandled events — main.py should 200-ack and skip.
-    Razorpay retries on non-2xx, so always return 200 even for ignored events.
+    Normalizes a Razorpay webhook into a unified dict.
+    Extracts both payment_link entity and payment entity.
     """
     event = payload.get("event")
     if event not in _HANDLED_EVENTS:
         return None
 
     try:
-        entity = payload["payload"]["payment_link"]["entity"]
+        payload_data = payload.get("payload", {})
+        link_entity = payload_data.get("payment_link", {}).get("entity", {})
+        payment_entity = payload_data.get("payment", {}).get("entity", {})
     except (KeyError, TypeError):
-        logger.warning(
-            f"[Razorpay] Could not extract payment_link entity from event: {event}"
-        )
+        logger.warning(f"[Razorpay] Could not extract entities from event: {event}")
         return None
 
     # Guard: reference_id could be None if the link wasn't created by us
-    session_id = entity.get("reference_id")
+    session_id = link_entity.get("reference_id")
     if not session_id:
         logger.warning(
             f"[Razorpay] Webhook event '{event}' has no reference_id — not our link, ignoring"
         )
         return None
 
-    notes = entity.get("notes") or {}
+    notes = link_entity.get("notes") or {}
 
     return {
         "event":           _HANDLED_EVENTS[event],
         "session_id":      session_id,
-        "payment_link_id": entity.get("id"),
-        "amount_paid":     entity.get("amount_paid") or 0,
+        "payment_link_id": link_entity.get("id"),
+        "amount_paid":     link_entity.get("amount_paid") or payment_entity.get("amount") or 0,
         "phone":           notes.get("phone"),
         "service_type":    notes.get("service_type"),
+        # 🚀 ADDED FOR FINANCIAL AUDIT LOGGING:
+        "payment_id":      payment_entity.get("id"),       # e.g., 'pay_PnXXXXX'
+        "order_id":        payment_entity.get("order_id") or link_entity.get("order_id"), # e.g., 'order_PnXXXXX'
     }
 
 
