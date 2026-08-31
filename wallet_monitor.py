@@ -361,7 +361,7 @@ async def _handle_paid(
         fiat_amount=amount_paid / 100.0, # Convert paise to INR
         session_id=session_id,
         rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured","timestamp": current_time},
-        x402_data={"tx_id": x402_tx, "payer": "TREASURY_WALLET", "payto": "FACILITATOR_WALLET", "amount_atomic": "40000", "network": "algorand_mainnet","timestamp": current_time,}
+        x402_data={"tx_id": x402_tx, "payer": "TREASURY_WALLET", "payto": "FACILITATOR_WALLET", "amount_atomic": "40000", "network": "algorand_mainnet","timestamp": current_time,"status": "SETTLED"}
     )
     
     if success:
