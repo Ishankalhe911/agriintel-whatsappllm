@@ -1,7 +1,7 @@
 import logging
 import os
 from datetime import datetime, timezone
-from psycopg2 import pool
+import psycopg2
 from typing import Optional, Tuple, Dict, Any
 from consent_log import hash_phone_number, normalize_phone  # Reuse your existing hash function
 
@@ -10,25 +10,18 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 class WalletDB:
     def __init__(self):
-        self.db_url = DATABASE_URL
-        self.connection_pool = None
-        
-        if self.db_url:
-            try:
-                self.connection_pool = pool.ThreadedConnectionPool(
-                    minconn=1,
-                    maxconn=10,
-                    dsn=self.db_url
-                )
-                self._init_db()
-            except Exception as e:
-                logger.error(f"Failed to create WalletDB connection pool: {e}")
+        self.db_url = os.getenv("DATABASE_URL")
+        if not self.db_url:
+            raise ValueError("DATABASE_URL is not set!")
+        self._init_db()
+
+    def _get_connection(self):
+        # 🚀 Helper method to get a fresh connection every time
+        # This completely prevents "Zombie Connection" drops from Neon/Supabase
+        return psycopg2.connect(self.db_url)
 
     def _init_db(self):
         """Creates the User Credits ledger and the Top-up Audit table."""
-        if not self.connection_pool:
-            return
-
         # Using PostgreSQL syntax (SERIAL, TIMESTAMPTZ, JSONB)
         schema_query = """
         -- 1. The actual balance ledger for the user
@@ -40,7 +33,7 @@ class WalletDB:
         );
 
         -- 2. The immutable audit log for the x402 Challenge
-        CREATE TABLE IF NOT EXISTS topup_transactions (
+        CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
             hashed_phone VARCHAR(64) NOT NULL,
             session_id VARCHAR(100),
@@ -69,28 +62,28 @@ class WalletDB:
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
         );
         
-        CREATE INDEX IF NOT EXISTS idx_topup_hashed_phone ON topup_transactions(hashed_phone);
-        CREATE INDEX IF NOT EXISTS idx_topup_rzp_id ON topup_transactions(razorpay_payment_id);
+        CREATE INDEX IF NOT EXISTS idx_tx_hashed_phone ON transactions(hashed_phone);
+        CREATE INDEX IF NOT EXISTS idx_tx_rzp_id ON transactions(razorpay_payment_id);
         """
         
-        conn = self.connection_pool.getconn()
+        conn = self._get_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute(schema_query)
             conn.commit()
             logger.info("WalletDB tables initialized successfully.")
         except Exception as e:
-            conn.rollback()
+            if conn and not conn.closed:
+                conn.rollback()
             logger.error(f"Failed to initialize WalletDB tables: {e}")
         finally:
-            self.connection_pool.putconn(conn)
+            if conn and not conn.closed:
+                conn.close()
 
     def get_balance(self, phone: str) -> int:
         """Returns the current query credit balance for a farmer."""
-        if not self.connection_pool: return 0
-        
         hashed_phone = hash_phone_number(phone)
-        conn = self.connection_pool.getconn()
+        conn = self._get_connection()
         try:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT credit_balance FROM user_credits WHERE hashed_phone = %s", (hashed_phone,))
@@ -100,14 +93,13 @@ class WalletDB:
             logger.error(f"Error fetching balance: {e}")
             return 0
         finally:
-            self.connection_pool.putconn(conn)
+            if conn and not conn.closed:
+                conn.close()
 
     def deduct_credit(self, phone: str) -> bool:
         """Deducts 1 credit if balance > 0. Returns True on success, False if empty."""
-        if not self.connection_pool: return False
-        
         hashed_phone = hash_phone_number(phone)
-        conn = self.connection_pool.getconn()
+        conn = self._get_connection()
         try:
             with conn.cursor() as cursor:
                 # PostgreSQL atomic update with returning clause
@@ -121,11 +113,13 @@ class WalletDB:
                 conn.commit()
                 return bool(row) # True if update succeeded and returned a row
         except Exception as e:
-            conn.rollback()
+            if conn and not conn.closed:
+                conn.rollback()
             logger.error(f"Error deducting credit: {e}")
             return False
         finally:
-            self.connection_pool.putconn(conn)
+            if conn and not conn.closed:
+                conn.close()
 
     def grant_credits_and_log(
         self, 
@@ -142,14 +136,12 @@ class WalletDB:
         The Master Transaction Function.
         Upserts the user's balance AND writes the massive audit log in ONE database transaction.
         """
-        if not self.connection_pool: return False
-        
         hashed_phone = hash_phone_number(phone)
         rzp = rzp_data or {}
         x402 = x402_data or {}
         current_time = datetime.now(timezone.utc)
         
-        conn = self.connection_pool.getconn()
+        conn = self._get_connection()
         try:
             with conn.cursor() as cursor:
                 # 1. UPSERT the user balance
@@ -167,7 +159,7 @@ class WalletDB:
 
                 # 2. Write the Audit Log
                 cursor.execute("""
-                    INSERT INTO topup_transactions (
+                    INSERT INTO transactions (
                         hashed_phone, session_id, payment_source, package_id, fiat_amount, credits_granted,
                         razorpay_payment_id, razorpay_order_id, razorpay_payment_status, razorpay_timestamp,
                         x402_tx_id, x402_payer, x402_payto, x402_network, x402_amount_atomic, x402_timestamp, x402_settlement_status,
@@ -189,13 +181,15 @@ class WalletDB:
             logger.info(f"Granted {credits_to_add} credits to {phone[-4:]}. New balance: {new_balance}")
             return True
         except Exception as e:
-            conn.rollback()
+            if conn and not conn.closed:
+                conn.rollback()
             logger.error(f"Failed to grant credits and log transaction: {e}")
             return False
         finally:
-            self.connection_pool.putconn(conn)
+            if conn and not conn.closed:
+                conn.close()
 
     def close(self):
-        if self.connection_pool:
-            self.connection_pool.closeall()
-            logger.info("WalletDB connection pool closed.")
+        # We are using short-lived connections now, so there is no pool to close.
+        # Kept this method so main.py lifespan doesn't throw an AttributeError on shutdown.
+        logger.info("WalletDB using short-lived connections. Shutdown complete.")
