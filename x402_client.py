@@ -22,7 +22,7 @@ import base64
 import logging
 import os
 from typing import Optional
-
+import json
 import httpx
 from algosdk import account, encoding, mnemonic
 from x402.client import x402Client
@@ -210,7 +210,19 @@ async def call_weather_risk(
             logger.info("[x402] ✅ weather-risk payment settled")
             asyncio.create_task(_check_treasury(float_address))
             data = response.json()
-            data["x402_tx_id"] = response.headers.get("x-transaction-hash") or response.headers.get("x-tx-id")
+            # 🚀 PLUGS THE X402_TX_ID HOLE
+            x402_tx = None
+            payment_header = response.headers.get("payment-response")
+            if payment_header:
+                try:
+                    import json
+                    decoded_json = base64.b64decode(payment_header).decode("utf-8")
+                    payment_data = json.loads(decoded_json)
+                    x402_tx = payment_data.get("transaction")
+                except Exception as e:
+                    logger.warning(f"[x402] Failed to decode payment-response header: {e}")
+            
+            data["x402_tx_id"] = x402_tx
             return data
 
         elif response.status_code == 400:

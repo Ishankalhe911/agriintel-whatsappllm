@@ -32,7 +32,7 @@ CRITICAL RULES:
 import asyncio
 import logging
 from typing import Optional
-
+from datetime import datetime, timezone
 from delivery import deliver
 from marathi_formatter import format_response_for_whatsapp
 from razorpay_handler import create_payment_link
@@ -352,7 +352,7 @@ async def _handle_paid(
     payment_id = event.get("payment_id") # Must be added to razorpay_handler!
     order_id = event.get("order_id")     # Must be added to razorpay_handler!
     x402_tx = result.get("x402_tx_id")   # Must be added to delivery.py!
-    
+    current_time = datetime.now(timezone.utc)
     success = wallet_db.grant_credits_and_log(
         phone=phone,
         package_id="TIER_5_SINGLE_QUERY", 
@@ -360,8 +360,8 @@ async def _handle_paid(
         payment_source="WHATSAPP_UPI",
         fiat_amount=amount_paid / 100.0, # Convert paise to INR
         session_id=session_id,
-        rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured"},
-        x402_data={"tx_id": x402_tx, "payer": "TREASURY_WALLET", "payto": "FACILITATOR_WALLET", "amount_atomic": "40000", "network": "algorand_mainnet"}
+        rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured","timestamp": current_time},
+        x402_data={"tx_id": x402_tx, "payer": "TREASURY_WALLET", "payto": "FACILITATOR_WALLET", "amount_atomic": "40000", "network": "algorand_mainnet","timestamp": current_time,}
     )
     
     if success:
@@ -593,7 +593,8 @@ async def _retry_delivery_after_delay(
     if wallet_db and event:
         payment_id = event.get("payment_id") 
         order_id = event.get("order_id")     
-        x402_tx = result.get("x402_tx_id")   
+        x402_tx = result.get("x402_tx_id")  
+        current_time = datetime.now(timezone.utc) 
         
         success = wallet_db.grant_credits_and_log(
             phone=phone,
@@ -602,14 +603,15 @@ async def _retry_delivery_after_delay(
             payment_source="WHATSAPP_UPI",
             fiat_amount=amount_paid / 100.0, 
             session_id=session_id,
-            rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured"},
+            rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured","timestamp": current_time},
             x402_data={
                 "tx_id": x402_tx, 
                 "payer": "TREASURY_WALLET", 
                 "payto": "FACILITATOR_WALLET", 
                 "amount_atomic": "40000", 
                 "network": "algorand_mainnet",
-                "status": "SETTLED"
+                "status": "SETTLED",
+                "timestamp": current_time
             }
         )
         
