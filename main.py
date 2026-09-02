@@ -66,6 +66,7 @@ from orchestrator import orchestrate
 from razorpay_handler import (
     create_payment_link,
     parse_webhook_event,
+    create_topup_payment_link,
     verify_webhook_signature,
 )
 from session_store import SessionStore, normalize_phone
@@ -372,10 +373,15 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
             )
             return
 
+                # ── Store button reply id so orchestrator topup selection can read it ──
+        if session:
+            store.update_session_data(
+                session.get("session_id", ""),
+                last_button_reply_id=reply_id,
+            )
         # ── All other button/list replies — treat as fresh text ──────────
         text = reply_title or reply_id
         await _handle_text_message(phone, text, session, lang)
-
     
     
     elif msg_type == "location":
@@ -634,8 +640,8 @@ async def _handle_text_message(
         await send_text(phone, "⚠️ तांत्रिक अडचण. कृपया पुन्हा प्रयत्न करा.")
         return
 
-    status        = result.get("status")
-    reply_message = result.get("reply_message", "")
+        status         = result.get("status")
+    reply_message  = result.get("reply_message", "")
     needs_location = result.get("needs_location", False)
     detected_lang  = result.get("detected_language", lang)
 
@@ -643,36 +649,90 @@ async def _handle_text_message(
     if reply_message:
         await send_text(phone, reply_message)
 
-    # ── If not routed, we're done ──────────────────────────────────────────
-    if status != "routed":
-        # not_agri / not_handled / coming_soon / needs_clarification
-        # orchestrator already sent the right message — nothing more to do
+    # ── Topup: show package selection buttons ──────────────────────────────
+    if status == "topup_select":
+        await send_buttons(
+            to=phone,
+            body_text="पॅक निवडा 👇" if detected_lang == "mr" else "Choose a pack 👇",
+            buttons=[
+                ("PACK_20", "₹20 — 5 प्रश्न"),
+                ("PACK_30", "₹30 — 10 प्रश्न"),
+            ],
+        )
         return
 
-    # ── Routed — decide next step based on needs_location ─────────────────
-    # ── Routed — decide next step based on needs_location ─────────────────
+    # ── Topup: farmer picked a package → create topup payment link ─────────
+    if status == "topup_payment":
+        package_id = result.get("package_id")
+        link_result = await create_topup_payment_link(
+            session_id=session_id,
+            phone=phone,
+            package_id=package_id,
+        )
+        if link_result.get("error"):
+            logger.error(
+                f"[Main] Topup link creation failed: {link_result.get('error_reason')}"
+            )
+            await send_text(
+                phone,
+                "⚠️ लिंक तयार करता आली नाही. पुन्हा 'topup' पाठवा. 🙏"
+                if detected_lang == "mr" else
+                "⚠️ Could not create topup link. Send 'topup' again. 🙏"
+            )
+        else:
+            pkg_labels = {
+                "PACK_20": "₹20 — 5 प्रश्न",
+                "PACK_30": "₹30 — 10 प्रश्न",
+            }
+            store.update_session_data(
+                session_id,
+                payment_link_id=link_result.get("payment_link_id"),
+                payment_status="pending",
+            )
+            await send_payment_link(
+                to=phone,
+                body_text=(
+                    f"💳 *{pkg_labels.get(package_id, package_id)} क्रेडिट पॅक*\n\n"
+                    "UPI ने पेमेंट करा — PhonePe, GPay, Paytm."
+                    if detected_lang == "mr" else
+                    f"💳 *{pkg_labels.get(package_id, package_id)} Credit Pack*\n\nPay via UPI."
+                ),
+                button_label="💳 UPI ने भरा",
+                url=link_result["short_url"],
+                header_text="Farmyworth क्रेडिट",
+            )
+        return
+
+    # ── Not routed — done ──────────────────────────────────────────────────
+    if status != "routed":
+        return
+
+    # ── Routed with credits — deliver directly, no Razorpay ───────────────
+    if result.get("used_credits"):
+        await _deliver_with_credits(phone, session_id, detected_lang)
+        return
+
+    # ── Routed without credits — normal payment flow ───────────────────────
     if needs_location:
         needs_horizon = result.get("needs_horizon", False)
 
         if needs_horizon:
-            # Weather — ask horizon first, location comes after button reply
             store.update_session_data(session_id, horizon_asked=True)
             logger.info(f"[Main] Weather horizon ask sent for session {session_id}")
             await send_buttons(
-                to        = phone,
-                body_text = {
+                to=phone,
+                body_text={
                     "mr": "तुम्हाला किती दिवसांचा हवामान अंदाज हवा आहे?",
                     "hi": "कितने दिनों का मौसम अनुमान चाहिए?",
                     "en": "How many days of weather forecast do you need?",
                 }.get(detected_lang, "तुम्हाला किती दिवसांचा हवामान अंदाज हवा आहे?"),
-                buttons   = [
+                buttons=[
                     ("horizon_15d", "१५ दिवस"),
                     ("horizon_1m",  "१ महिना"),
                     ("horizon_2m",  "२ महिने"),
                 ],
             )
         else:
-            # Mandi or weather with harvest_date already known — go to location
             dpdpa_consent = (
                 "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे.\n"
                 "आपले स्थान फक्त या विनंतीसाठी वापरले जाईल."
@@ -682,11 +742,10 @@ async def _handle_text_message(
             )
             await send_text(phone, dpdpa_consent)
             await send_location_request(
-                to        = phone,
-                body_text = _LOCATION_REQUEST_TEXT.get(detected_lang, _LOCATION_REQUEST_TEXT["mr"]),
+                to=phone,
+                body_text=_LOCATION_REQUEST_TEXT.get(detected_lang, _LOCATION_REQUEST_TEXT["mr"]),
             )
     else:
-        # fertilizer — no location needed, go straight to payment
         await _send_payment(phone, session_id, detected_lang)
 
 
@@ -765,8 +824,11 @@ async def _handle_location_message(
 
     logger.info(f"[Main] Location saved for session {session_id}: lat={lat}, lon={lon}")
 
-    # Send payment link
-    await _send_payment(phone, session_id, lang)
+        # ── Credit mode vs pay-per-query ──────────────────────────────────────
+    if session.get("payment_mode") == "credits":
+        await _deliver_with_credits(phone, session_id, lang)
+    else:
+        await _send_payment(phone, session_id, lang)
 
 
 # ─── Send payment link ────────────────────────────────────────────────────────
@@ -874,7 +936,108 @@ async def _send_payment(phone: str, session_id: str, lang: str) -> None:
         f"service={service_type} | id={payment_link_id}"
     )
 
+async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
+    """
+    Delivers advisory directly for farmers with credit balance.
+    No Razorpay involved — deduct 1 credit on successful delivery.
+    Called when orchestrator returns used_credits=True.
+    """
+    from delivery import deliver
+    from marathi_formatter import format_response_for_whatsapp
 
+    session = store.get_session(session_id)
+    if not session:
+        logger.error(f"[Main] Credit delivery: session {session_id} gone")
+        await send_text(phone, "⚠️ तांत्रिक अडचण. पुन्हा प्रयत्न करा.")
+        return
+
+    service_type = session.get("service_type", "")
+    farmer_msg   = session.get("original_message", "")
+
+    # ── Need location first for mandi/weather ─────────────────────────────
+    if service_type in ("mandi", "weather") and not session.get("lat"):
+        # Location not yet collected — send location request
+        # (credits will be used after location is received)
+        dpdpa_consent = (
+            "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे."
+            if lang == "mr" else
+            "📍 *Location*: We need your location for accurate results."
+        )
+        await send_text(phone, dpdpa_consent)
+        await send_location_request(
+            to=phone,
+            body_text=_LOCATION_REQUEST_TEXT.get(lang, _LOCATION_REQUEST_TEXT["mr"]),
+        )
+        # Mark session as credit-based so location handler knows not to create
+        # a Razorpay link when location arrives
+        store.update_session_data(session_id, payment_mode="credits")
+        return
+
+    logger.info(
+        f"[Main] 💳 Credit delivery | session={session_id} | service={service_type}"
+    )
+
+    try:
+        result = await deliver(session)
+    except Exception as e:
+        logger.error(f"[Main] Credit delivery deliver() failed: {e}")
+        await send_text(phone, "⚠️ माहिती मिळवताना अडचण. पुन्हा प्रयत्न करा. 🙏")
+        return
+
+    if result.get("error"):
+        error_type = result.get("error_type", "UNKNOWN")
+        logger.error(f"[Main] Credit delivery error: {error_type}")
+        await send_text(
+            phone,
+            "⚠️ माहिती उपलब्ध नाही. क्रेडिट वापरला नाही — पुन्हा प्रयत्न करा. 🙏"
+            if lang == "mr" else
+            "⚠️ Data unavailable. Credit not used — please try again. 🙏"
+        )
+        # Don't deduct — delivery failed
+        return
+
+    # ── Deduct credit atomically AFTER successful delivery ─────────────────
+    deducted = wallet_db.deduct_credit(phone)
+    if not deducted:
+        logger.warning(
+            f"[Main] Credit deduction returned False for {phone[-4:]} "
+            f"— balance may have hit 0 between check and deduct"
+        )
+        # Still send the response — farmer gets data, we absorb the edge case
+
+    # ── Format and send ────────────────────────────────────────────────────
+    try:
+        formatted = await format_response_for_whatsapp(
+            service_type=service_type,
+            raw_data=result,
+            original_user_text=farmer_msg,
+        )
+    except Exception as e:
+        logger.error(f"[Main] Credit delivery formatter failed: {e}")
+        await send_text(
+            phone,
+            "✅ *माहिती मिळाली* — पण फॉर्मेट करताना अडचण आली.\n"
+            "कृपया पुन्हा प्रयत्न करा. 🙏"
+        )
+        return
+
+    await send_text(phone, formatted)
+
+    # Check remaining balance and warn if low/zero
+    remaining = wallet_db.get_balance(phone)
+    if remaining == 0:
+        await send_text(
+            phone,
+            "\n\n💳 *तुमचे सर्व क्रेडिट संपले.*\n'topup' लिहा आणि पुन्हा पॅक घ्या. 🌾"
+            if lang == "mr" else
+            "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
+        )
+
+    store.update_session_data(session_id, result_ready=True)
+    logger.info(
+        f"[Main] ✅ Credit delivery done | session={session_id} | "
+        f"remaining_credits={remaining}"
+    )
 # ─── DPDPA data deletion handler ──────────────────────────────────────────────
 
 async def _handle_data_deletion(

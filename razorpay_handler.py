@@ -55,6 +55,17 @@ SERVICE_PRICES_INR: dict[str, float] = {
     "fertilizer": 5.0,
 }
 
+# ─── Credit packages (topup rail) ─────────────────────────────────────────────
+# These are additive — SERVICE_PRICES_INR stays for per-query flow.
+PACKAGES: dict[str, dict] = {
+    "PACK_20": {"inr": 20.0, "credits": 5,  "label": "₹20 — 5 प्रश्न"},
+    "PACK_30": {"inr": 30.0, "credits": 10, "label": "₹30 — 10 प्रश्न"},
+}
+
+def get_package(package_id: str) -> dict:
+    """Returns package dict. Raises KeyError if unknown."""
+    return PACKAGES[package_id]
+
 def get_service_price(service_type: str) -> float:
     """Returns INR price for a service. Falls back to 10.0 if unknown."""
     return SERVICE_PRICES_INR.get(service_type, 10.0)
@@ -188,7 +199,83 @@ async def create_payment_link(
         logger.error(f"[Razorpay] Create link pipeline error: {e}")
         return _err("PIPELINE_ERROR", str(e))
 
+async def create_topup_payment_link(
+    session_id: str,
+    phone: str,
+    package_id: str,
+) -> dict:
+    """
+    Creates a Razorpay UPI Payment Link for a credit topup package.
+    Same pattern as create_payment_link() but uses PACKAGES pricing
+    and sets session_type=topup in notes so wallet_monitor routes correctly.
 
+    Returns same shape as create_payment_link():
+        {"payment_link_id", "short_url", "amount_paise", "expires_at"}
+    or error dict.
+    """
+    if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+        return _err("CONFIG_ERROR", "RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET not set")
+
+    try:
+        pkg = PACKAGES[package_id]
+    except KeyError:
+        return _err("INVALID_PACKAGE", f"Unknown package_id: {package_id}")
+
+    amount_paise = int(pkg["inr"] * 100)
+    clean_phone = phone.lstrip("+")
+    expires_at = int(time.time()) + (20 * 60)
+
+    payload = {
+        "upi_link":     True,
+        "amount":       amount_paise,
+        "currency":     "INR",
+        "reference_id": session_id,
+        "description":  f"Farmyworth {pkg['label']} क्रेडिट पॅक",
+        "expire_by":    expires_at,
+        "customer": {
+            "contact": clean_phone,
+        },
+        "notify": {"sms": False, "email": False},
+        "reminder_enable": False,
+        "notes": {
+            "session_id":   session_id,
+            "phone":        clean_phone,
+            "session_type": "topup",       # wallet_monitor uses this
+            "package_id":   package_id,    # wallet_monitor uses this
+            "credits":      str(pkg["credits"]),
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            response = await http.post(
+                f"{BASE_URL}/payment_links",
+                auth=_auth(),
+                json=payload,
+            )
+
+        if response.status_code in (200, 201):
+            data = response.json()
+            link_id = data.get("id")
+            logger.info(
+                f"[Razorpay] ✅ Topup link created | session={session_id} | "
+                f"package={package_id} | ₹{pkg['inr']} | id={link_id}"
+            )
+            return {
+                "payment_link_id": link_id,
+                "short_url":       data.get("short_url"),
+                "amount_paise":    data.get("amount"),
+                "expires_at":      expires_at,
+                "package_id":      package_id,
+                "credits":         pkg["credits"],
+            }
+
+        logger.error(f"[Razorpay] Topup link failed {response.status_code}: {response.text}")
+        return _err("CREATE_LINK_FAILED", response.text, response.status_code)
+
+    except Exception as e:
+        logger.error(f"[Razorpay] Topup link pipeline error: {e}")
+        return _err("PIPELINE_ERROR", str(e))
 # ─── 2. Webhook signature verification ───────────────────────────────────────
 
 def verify_webhook_signature(
@@ -261,7 +348,8 @@ def parse_webhook_event(payload: dict) -> Optional[dict]:
         "amount_paid":     link_entity.get("amount_paid") or payment_entity.get("amount") or 0,
         "phone":           notes.get("phone"),
         "service_type":    notes.get("service_type"),
-        # 🚀 ADDED FOR FINANCIAL AUDIT LOGGING:
+        "session_type": notes.get("session_type", "query"),   # "topup" or "query"
+        "package_id":   notes.get("package_id"),              # "PACK_20" / "PACK_30" / None
         "payment_id":      payment_entity.get("id"),       # e.g., 'pay_PnXXXXX'
         "order_id":        payment_entity.get("order_id") or link_entity.get("order_id"), # e.g., 'order_PnXXXXX'
     }

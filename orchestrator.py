@@ -40,7 +40,8 @@ import logging
 import os
 import random
 from typing import Optional
-
+# ─── Credit reader (read+deduct only — no grant path) ────────────────────────
+from wallet_db import WalletDB as CreditReader   # get_balance + deduct only
 from google import genai
 from google.genai import types
 
@@ -118,6 +119,63 @@ COMING_SOON_MESSAGES = {
 # Auto-updates since it's derived from the dict above
 COMING_SOON_KEYS = set(COMING_SOON_MESSAGES.keys())
 
+# ─── Topup intent keywords ────────────────────────────────────────────────────
+_TOPUP_KEYWORDS = {
+    "topup", "top up", "recharge", "credits", "pack", "package",
+    "रिचार्ज", "क्रेडिट", "पॅक", "शिल्लक", "balance",
+    "20", "30", "₹20", "₹30",
+}
+
+# ─── Package ad (appended after every successful routed response) ─────────────
+_PACKAGE_AD = {
+    "mr": (
+        "\n\n💡 *वारंवार प्रश्न विचारता? क्रेडिट पॅक घ्या:*\n"
+        "• ₹२० → ५ प्रश्न (प्रत्येकी ₹४)\n"
+        "• ₹३० → १० प्रश्न (प्रत्येकी ₹३)\n"
+        "_'topup' लिहा आणि पॅक निवडा_ 🌾"
+    ),
+    "hi": (
+        "\n\n💡 *बार-बार सवाल पूछते हैं? क्रेडिट पैक लें:*\n"
+        "• ₹२० → ५ सवाल (₹४ प्रति सवाल)\n"
+        "• ₹३० → १० सवाल (₹३ प्रति सवाल)\n"
+        "_'topup' लिखें और पैक चुनें_ 🌾"
+    ),
+    "en": (
+        "\n\n💡 *Ask often? Get a credit pack:*\n"
+        "• ₹20 → 5 queries (₹4 each)\n"
+        "• ₹30 → 10 queries (₹3 each)\n"
+        "_Reply 'topup' to pick a pack_ 🌾"
+    ),
+}
+
+# ─── Topup package selection message ─────────────────────────────────────────
+_TOPUP_SELECT = {
+    "mr": (
+        "💳 *क्रेडिट पॅक निवडा:*\n\n"
+        "• *PACK_20* — ₹२० → ५ प्रश्न\n"
+        "• *PACK_30* — ₹३० → १० प्रश्न\n\n"
+        "खालील बटणातून निवडा 👇"
+    ),
+    "hi": (
+        "💳 *क्रेडिट पैक चुनें:*\n\n"
+        "• *PACK_20* — ₹२० → ५ सवाल\n"
+        "• *PACK_30* — ₹३० → १० सवाल\n\n"
+        "नीचे बटन से चुनें 👇"
+    ),
+    "en": (
+        "💳 *Choose a credit pack:*\n\n"
+        "• *PACK_20* — ₹20 → 5 queries\n"
+        "• *PACK_30* — ₹30 → 10 queries\n\n"
+        "Choose below 👇"
+    ),
+}
+
+# ─── Low balance warning (shown when 1 credit remains) ───────────────────────
+_LOW_BALANCE_WARNING = {
+    "mr": "\n\n⚠️ *तुमचा शेवटचा क्रेडिट वापरला जाईल.* 'topup' लिहा आणि पॅक घ्या.",
+    "hi": "\n\n⚠️ *आपका आखिरी क्रेडिट उपयोग होगा।* 'topup' लिखें और पैक लें।",
+    "en": "\n\n⚠️ *Your last credit will be used.* Reply 'topup' to recharge.",
+}
 
 # ─── Stage 1: Preflight ───────────────────────────────────────────────────────
 
@@ -680,6 +738,85 @@ async def orchestrate(
     logger.info(f"[Orchestrator] Processing: '{message[:60]}'")
 
     prior = session_store.get_session(session_id) or {}
+    phone = session_id  # session_id IS the phone (wa_id) in your architecture
+
+    # ── TOPUP INTENT CHECK — before everything else ───────────────────────
+    msg_lower = message.strip().lower()
+    is_topup_intent = any(kw in msg_lower for kw in _TOPUP_KEYWORDS)
+
+    if is_topup_intent and prior.get("awaiting") not in ["crop", "pest_confirmation", "horizon"]:
+        lang = prior.get("language", "mr")
+        session_store.update_session_data(session_id, awaiting="topup_package", session_type="topup")
+        return {
+            "status": "topup_select",
+            "service_type": None,
+            "reply_message": _TOPUP_SELECT.get(lang, _TOPUP_SELECT["mr"]),
+            "session_updated": True,
+            "detected_language": lang,
+            "crop": None, "qty": None,
+            "needs_location": False,
+            "needs_horizon": False,
+            "needs_topup_buttons": True,  # main.py uses this to send package buttons
+        }
+
+    # ── TOPUP PACKAGE SELECTION — farmer picked a package ────────────────
+    if prior.get("awaiting") == "topup_package":
+        lang = prior.get("language", "mr")
+        reply_id = prior.get("last_button_reply_id", "")  # set by main.py on button reply
+        # Also accept text "pack20" / "pack30" / "20" / "30"
+        picked_pack = None
+        if "pack_20" in msg_lower or "pack20" in msg_lower or msg_lower.strip() == "20":
+            picked_pack = "PACK_20"
+        elif "pack_30" in msg_lower or "pack30" in msg_lower or msg_lower.strip() == "30":
+            picked_pack = "PACK_30"
+
+        if picked_pack:
+            session_store.update_session_data(
+                session_id,
+                session_type="topup",
+                package_id=picked_pack,
+                awaiting=None,
+            )
+            return {
+                "status": "topup_payment",
+                "service_type": None,
+                "reply_message": "",          # main.py sends payment link directly
+                "session_updated": True,
+                "detected_language": lang,
+                "crop": None, "qty": None,
+                "needs_location": False,
+                "needs_horizon": False,
+                "needs_topup_payment": True,  # main.py trigger: create_topup_payment_link()
+                "package_id": picked_pack,
+            }
+        else:
+            # Unrecognised reply — re-show buttons
+            return {
+                "status": "topup_select",
+                "service_type": None,
+                "reply_message": _TOPUP_SELECT.get(lang, _TOPUP_SELECT["mr"]),
+                "session_updated": False,
+                "detected_language": lang,
+                "crop": None, "qty": None,
+                "needs_location": False,
+                "needs_horizon": False,
+                "needs_topup_buttons": True,
+            }
+
+    # ── CREDIT BALANCE PREFLIGHT ──────────────────────────────────────────
+    # Check AFTER topup intent, BEFORE any LLM pipeline
+    try:
+        _credit_reader = CreditReader()
+        balance = _credit_reader.get_balance(phone)
+    except Exception as e:
+        logger.warning(f"[Orchestrator] Credit check failed (non-fatal): {e}")
+        balance = 0  # fail-open → falls through to per-query flow
+
+    logger.info(f"[Orchestrator] Credit balance for {phone[-4:]}: {balance}")
+    # balance > 0 → deduction happens in wallet_monitor after delivery
+    # balance = 0 → normal per-query Razorpay flow, unchanged
+    # We store balance in session so wallet_monitor knows which path to take
+    session_store.update_session_data(session_id, credit_balance_at_entry=balance)
 
     # ── Fix 13: pest_confirmation bypass — handle reply BEFORE pipeline ──
     if prior.get("awaiting") == "pest_confirmation":
@@ -1032,14 +1169,38 @@ async def orchestrate(
             ),
         }
 
+    # ── Append package ad + low balance warning ───────────────────────────
+    reply_text = ack.get(lang, ack["mr"])
+    
+    # 🚀 DEDUCT THE CREDIT HERE IN THE ORCHESTRATOR
+    used_credits = False
+    if balance > 0:
+        try:
+            _credit_reader = CreditReader()
+            if _credit_reader.deduct_credit(phone):
+                balance -= 1  # Update local variable so the response is accurate
+                used_credits = True
+                logger.info(f"[Orchestrator] ✅ 1 Credit deducted for {phone[-4:]}. New balance: {balance}")
+        except Exception as e:
+            logger.error(f"[Orchestrator] 🚨 Failed to deduct credit: {e}")
+
+    if balance == 0 and used_credits:
+        # They just used their last credit
+        reply_text += _LOW_BALANCE_WARNING.get(lang, _LOW_BALANCE_WARNING["mr"])
+    elif balance == 0 and not used_credits:
+        # per-query flow — append ad occasionally
+        reply_text += _PACKAGE_AD.get(lang, _PACKAGE_AD["mr"])
+
     return {
         "status": "routed",
         "service_type": service_type,
-        "reply_message": ack.get(lang, ack["mr"]),
+        "reply_message": reply_text,
         "session_updated": True,
         "detected_language": lang,
         "crop": crop,
         "qty": extraction.get("qty"),
         "needs_location": needs_location,
         "needs_horizon": needs_horizon,
+        "used_credits": used_credits,   # main.py uses this to skip Razorpay
+        "credit_balance": balance,
     }

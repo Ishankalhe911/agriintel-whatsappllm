@@ -405,3 +405,95 @@ async def call_fertilizer(
     except Exception as e:
         logger.error(f"[x402] fertilizer-info pipeline error: {e}")
         return _err("PIPELINE_ERROR", str(e))
+
+# ─── call_credits_topup ───────────────────────────────────────────────────────
+
+# Package → atomic USDC price mapping
+_TOPUP_PACKAGES = {
+    "PACK_20": {
+        "url_path": "/credits-topup/pack20",
+        "atomic":   500000,   # 0.5 USDC
+        "credits":  5,
+    },
+    "PACK_30": {
+        "url_path": "/credits-topup/pack30",
+        "atomic":   1000000,  # 1.0 USDC
+        "credits":  10,
+    },
+}
+
+CREDITS_TOPUP_BASE = os.getenv(
+    "CREDITS_TOPUP_URL", "https://agriintellect.site"
+)
+
+
+async def call_credits_topup(phone: str, package_id: str) -> dict:
+    """
+    Calls POST /credits-topup/pack20 or /credits-topup/pack30 via x402.
+    Credit write happens inside the endpoint — wallet_monitor never writes credits.
+
+    Returns on success:
+        {"credits_granted": 5, "new_balance": 5, "package_id": "PACK_20"}
+    Returns on failure:
+        {"error": True, "error_type": ..., "error_reason": ...}
+    """
+    pkg = _TOPUP_PACKAGES.get(package_id)
+    if not pkg:
+        return _err("INVALID_PACKAGE", f"Unknown package_id: {package_id}")
+
+    url = f"{CREDITS_TOPUP_BASE}{pkg['url_path']}"
+    payload = {"phone": phone}
+
+    logger.info(f"[x402] credits-topup → package={package_id} | phone={phone[-4:]}")
+
+    try:
+        client, float_address = _build_client()
+
+        async with wrapHttpxWithPayment(client) as http:
+            request = http.build_request(
+                "POST", url, json=payload, timeout=30.0
+            )
+            await request.aread()
+            response = await http.send(request)
+
+        if response.status_code == 200:
+            logger.info(f"[x402] ✅ credits-topup settled | package={package_id}")
+            asyncio.create_task(_check_treasury(float_address))
+            data = response.json()
+            x402_tx = None
+            payment_header = response.headers.get("payment-response")
+            if payment_header:
+                try:
+                    import json, base64
+                    decoded_json = base64.b64decode(payment_header).decode("utf-8")
+                    payment_data = json.loads(decoded_json)
+                    x402_tx = payment_data.get("transaction")
+                except Exception as e:
+                    logger.warning(f"[x402] Failed to decode payment-response header: {e}")
+            
+            data["x402_tx_id"] = x402_tx
+            return data
+
+        elif response.status_code == 400:
+            logger.warning(f"[x402] credits-topup 400: {response.text}")
+            return _err("BAD_REQUEST", response.text, 400)
+
+        elif response.status_code == 503:
+            logger.warning("[x402] credits-topup 503: service unavailable")
+            return _err("DATA_UNAVAILABLE", "Topup service unavailable. Retry in 60s.", 503)
+
+        else:
+            logger.error(f"[x402] credits-topup unexpected {response.status_code}")
+            return _err(
+                "UNEXPECTED_ERROR",
+                f"HTTP {response.status_code}: {response.text}",
+                response.status_code,
+            )
+
+    except ValueError as e:
+        logger.error(f"[x402] Topup config error: {e}")
+        return _err("CONFIG_ERROR", str(e))
+
+    except Exception as e:
+        logger.error(f"[x402] credits-topup pipeline error: {e}")
+        return _err("PIPELINE_ERROR", str(e))

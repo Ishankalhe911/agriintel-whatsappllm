@@ -137,6 +137,11 @@ _MESSAGES = {
         "hi": "AgriIntel जानकारी",
         "en": "AgriIntel Advisory",
     },
+        "topup_error": {
+        "mr": "⚠️ *क्रेडिट जोडताना अडचण*\n\nतुमचे पेमेंट सुरक्षित आहे. 5 मिनिटांत पुन्हा प्रयत्न होईल. 🙏",
+        "hi": "⚠️ *क्रेडिट जोड़ने में दिक्कत*\n\nआपका पेमेंट सुरक्षित है। 5 मिनट में दोबारा कोशिश होगी। 🙏",
+        "en": "⚠️ *Credit top-up issue*\n\nYour payment is safe. We'll retry in 5 minutes. 🙏",
+    },
 }
 
 
@@ -280,7 +285,20 @@ async def _handle_paid(
         f"[WalletMonitor] ✅ Payment confirmed | session={session_id} | "
         f"service={service_type} | ₹{amount_paid / 100:.2f}"
     )
-
+        # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
+    session_type = session.get("session_type") or event.get("session_type", "query")
+    if session_type == "topup":
+        await _handle_topup_paid(
+            session=session,
+            session_id=session_id,
+            phone=phone,
+            lang=lang,
+            event=event,
+            store=store,
+            consent_logger=consent_logger,
+        )
+        return
+    # ── below = existing query flow, untouched ────────────────────────────
     # ── DPDPA consent log ─────────────────────────────────────────────────
     if consent_logger:
         try:
@@ -346,30 +364,10 @@ async def _handle_paid(
             )
         else:
             await send_text(phone, _msg("delivery_error", lang))
-        return
+        
 
     
-    payment_id = event.get("payment_id") # Must be added to razorpay_handler!
-    order_id = event.get("order_id")     # Must be added to razorpay_handler!
-    x402_tx = result.get("x402_tx_id")   # Must be added to delivery.py!
-    current_time = datetime.now(timezone.utc)
-    success = wallet_db.grant_credits_and_log(
-        phone=phone,
-        package_id="TIER_5_SINGLE_QUERY", 
-        credits_to_add=1,
-        payment_source="WHATSAPP_UPI",
-        fiat_amount=amount_paid / 100.0, # Convert paise to INR
-        session_id=session_id,
-        rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured","timestamp": current_time},
-        x402_data={"tx_id": x402_tx, "payer": "TREASURY_WALLET", "payto": "FACILITATOR_WALLET", "amount_atomic": "40000", "network": "algorand_mainnet","timestamp": current_time,"status": "SETTLED"}
-    )
-    
-    if success:
-        # Since this is a pay-per-query, we immediately consume the 1 credit they just bought
-        wallet_db.deduct_credit(phone)
-        logger.info(f"[WalletMonitor] ✅ Financial Audit Log written for {session_id}")
-    else:
-        logger.error(f"[WalletMonitor] 🚨 FAILED TO WRITE FINANCIAL LOG for {session_id}")
+        logger.info(f"[WalletMonitor] ✅ Query delivered for session {session_id}")
   
 
     # ── Format and send to farmer ──────────────────────────────────────────
@@ -404,7 +402,188 @@ async def _handle_paid(
     # ── Mark result delivered ──────────────────────────────────────────────
     store.update_session_data(session_id, result_ready=True, retry_scheduled=False)
     logger.info(f"[WalletMonitor] ✅ Response delivered to {phone[-4:]} for session {session_id}")
+# ─── Top-Up Paid Handler ──────────────────────────────────────────────────────
 
+async def _handle_topup_paid(
+    session: dict,
+    session_id: str,
+    phone: str,
+    lang: str,
+    event: dict,
+    store: SessionStore,
+    consent_logger=None,
+) -> None:
+    """
+    Handles a completed topup payment.
+    Calls /credits-topup via x402 — credit write happens there, not here.
+    wallet_monitor never writes credits directly.
+    """
+    from x402_client import call_credits_topup
+
+    package_id = session.get("package_id") or event.get("package_id")
+    if not package_id:
+        logger.error(f"[WalletMonitor] Topup session {session_id} has no package_id — cannot credit")
+        await send_text(
+            phone,
+            (
+                "⚠️ *क्रेडिट जोडताना अडचण आली.*\n"
+                "कृपया support ला कळवा — तुमचे पेमेंट सुरक्षित आहे. 🙏"
+                if lang == "mr" else
+                "⚠️ Credit top-up failed — please contact support. Your payment is safe."
+            )
+        )
+        return
+
+    logger.info(f"[WalletMonitor] Topup session {session_id} | package={package_id}")
+
+    # ── DPDPA consent log ─────────────────────────────────────────────────
+    if consent_logger:
+        try:
+            consent_logger.log_consent(
+                phone=phone,
+                consent_type="topup_payment_completed",
+                granted=True,
+                language=lang,
+                metadata={
+                    "session_id": session_id,
+                    "package_id": package_id,
+                    "amount_paise": event.get("amount_paid", 0),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[WalletMonitor] Topup consent log failed (non-fatal): {e}")
+
+    # ── Call /credits-topup via x402 ──────────────────────────────────────
+    # Retry up to 3 times — credit write failure after payment is high-stakes
+    result = None
+    for attempt in range(1, 4):
+        try:
+            result = await call_credits_topup(phone=phone, package_id=package_id)
+            if not result.get("error"):
+                break
+            logger.warning(
+                f"[WalletMonitor] Topup attempt {attempt} failed: "
+                f"{result.get('error_type')} — retrying"
+            )
+        except Exception as e:
+            logger.error(f"[WalletMonitor] Topup attempt {attempt} exception: {e}")
+        if attempt < 3:
+            await asyncio.sleep(5)
+
+    if not result or result.get("error"):
+        logger.error(
+            f"[WalletMonitor] 🚨 All topup attempts failed for {session_id} | "
+            f"package={package_id} — farmer paid but credits not written"
+        )
+        await send_text(
+            phone,
+            (
+                "⚠️ *क्रेडिट जोडताना अडचण आली.*\n"
+                "तुमचे पेमेंट झाले आहे — 5 मिनिटांत पुन्हा प्रयत्न होईल.\n"
+                "समस्या कायम राहिल्यास 'topup' पाठवा. 🙏"
+                if lang == "mr" else
+                "⚠️ Credits not added yet — we'll retry in 5 min. Your payment is safe."
+            )
+        )
+        # Schedule one background retry
+        asyncio.create_task(
+            _retry_topup_after_delay(
+                session_id=session_id,
+                phone=phone,
+                package_id=package_id,
+                lang=lang,
+                store=store,
+                delay_seconds=300,
+            )
+        )
+        return
+
+    credits_granted = result.get("credits_granted", 0)
+    new_balance = result.get("new_balance", 0)
+
+    # ── Confirm to farmer ─────────────────────────────────────────────────
+    confirm_msg = {
+        "mr": (
+            f"✅ *{credits_granted} क्रेडिट जोडले!*\n\n"
+            f"💳 शिल्लक: *{new_balance} प्रश्न*\n\n"
+            "आता तुमचा प्रश्न विचारा — थेट उत्तर मिळेल, पेमेंट नाही! 🌾"
+        ),
+        "hi": (
+            f"✅ *{credits_granted} क्रेडिट जोड़े गए!*\n\n"
+            f"💳 बकाया: *{new_balance} सवाल*\n\n"
+            "अब अपना सवाल पूछें — सीधे जवाब मिलेगा, पेमेंट नहीं! 🌾"
+        ),
+        "en": (
+            f"✅ *{credits_granted} credits added!*\n\n"
+            f"💳 Balance: *{new_balance} queries*\n\n"
+            "Ask your next question — no payment needed! 🌾"
+        ),
+    }
+    await send_text(phone, confirm_msg.get(lang, confirm_msg.get("mr", "")))
+    store.update_session_data(session_id, result_ready=True, session_type="topup_complete")
+    logger.info(
+        f"[WalletMonitor] ✅ Topup complete | session={session_id} | "
+        f"credits={credits_granted} | balance={new_balance}"
+    )
+
+
+# ─── Top-Up Delayed Background Retry Helper ───────────────────────────────────
+
+async def _retry_topup_after_delay(
+    session_id: str,
+    phone: str,
+    package_id: str,
+    lang: str,
+    store: SessionStore,
+    delay_seconds: int = 300,
+) -> None:
+    """
+    Background safety net: retries calling call_credits_topup once after delay_seconds
+    if all initial attempts failed.
+    """
+    logger.info(
+        f"[WalletMonitor] Background retry scheduled for session {session_id} in {delay_seconds}s"
+    )
+    await asyncio.sleep(delay_seconds)
+
+    # Re-fetch session — skip if already fulfilled by another event
+    session = store.get_session(session_id)
+    if not session or session.get("session_type") == "topup_complete":
+        logger.info(f"[WalletMonitor] Topup session {session_id} already completed — skipping background retry")
+        return
+
+    from x402_client import call_credits_topup
+
+    try:
+        result = await call_credits_topup(phone=phone, package_id=package_id)
+        if result and not result.get("error"):
+            credits_granted = result.get("credits_granted", 0)
+            new_balance = result.get("new_balance", 0)
+
+            confirm_msg = {
+                "mr": (
+                    f"✅ *{credits_granted} क्रेडिट जोडले!*\n\n"
+                    f"💳 शिल्लक: *{new_balance} प्रश्न*\n\n"
+                    "आता तुमचा प्रश्न विचारा — थेट उत्तर मिळेल! 🌾"
+                ),
+                "hi": (
+                    f"✅ *{credits_granted} क्रेडिट जोड़े गए!*\n\n"
+                    f"💳 बकाया: *{new_balance} सवाल*\n\n"
+                    "अब अपना सवाल पूछें — सीधे जवाब मिलेगा! 🌾"
+                ),
+                "en": (
+                    f"✅ *{credits_granted} credits added!*\n\n"
+                    f"💳 Balance: *{new_balance} queries*\n\n"
+                    "Ask your question now! 🌾"
+                ),
+            }
+            await send_text(phone, confirm_msg.get(lang, confirm_msg.get("mr", "")))
+            store.update_session_data(session_id, result_ready=True, session_type="topup_complete")
+            logger.info(f"[WalletMonitor] ✅ Delayed background topup succeeded for {session_id}")
+        else:
+            logger.error(f"[WalletMonitor] 🚨 Delayed background topup failed for {session_id}: {result}")
+    except Exception as e:
+        logger.error(f"[WalletMonitor] Delayed background topup exception for {session_id}: {e}")
 
 # ─── expired handler ──────────────────────────────────────────────────────────
 
@@ -585,41 +764,12 @@ async def _retry_delivery_after_delay(
             f"{result.get('error_type')}"
         )
         await send_text(phone, _msg("delivery_error", lang))
-        return
+        
 
     # 🚀 ========================================================== 🚀
     # 🚀 FINANCIAL AUDIT LOGGING (For Successful Retries)
     # 🚀 ========================================================== 🚀
-    if wallet_db and event:
-        payment_id = event.get("payment_id") 
-        order_id = event.get("order_id")     
-        x402_tx = result.get("x402_tx_id")  
-        current_time = datetime.now(timezone.utc) 
-        
-        success = wallet_db.grant_credits_and_log(
-            phone=phone,
-            package_id="TIER_5_SINGLE_QUERY", 
-            credits_to_add=1,
-            payment_source="WHATSAPP_UPI",
-            fiat_amount=amount_paid / 100.0, 
-            session_id=session_id,
-            rzp_data={"payment_id": payment_id, "order_id": order_id, "status": "captured","timestamp": current_time},
-            x402_data={
-                "tx_id": x402_tx, 
-                "payer": "TREASURY_WALLET", 
-                "payto": "FACILITATOR_WALLET", 
-                "amount_atomic": "40000", 
-                "network": "algorand_mainnet",
-                "status": "SETTLED",
-                "timestamp": current_time
-            }
-        )
-        
-        if success:
-            wallet_db.deduct_credit(phone)
-            logger.info(f"[WalletMonitor] ✅ Financial Audit Log written for RETRY session {session_id}")
-        else:
-            logger.error(f"[WalletMonitor] 🚨 FAILED TO WRITE FINANCIAL LOG for RETRY session {session_id}")
+        logger.info(f"[WalletMonitor] ✅ Retry query delivered for session {session_id}")
     # 🚀 ========================================================== 🚀
 
     try:
