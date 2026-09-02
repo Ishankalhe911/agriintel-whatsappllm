@@ -1031,17 +1031,21 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
 
     await send_text(phone, formatted)
 
-    # Topup nudge — highest receptivity moment, right after value delivery
-    _topup_nudge = {
-        "mr": "💡 *वारंवार प्रश्न विचारता?*\n'topup' लिहा — ₹२०/₹३० पॅकमध्ये पेमेंट एकदाच करा.",
-        "hi": "💡 *बार-बार सवाल पूछते हैं?*\n'topup' लिखें — ₹20/₹30 पैक में एक बार पेमेंट करें।",
-        "en": "💡 *Ask often?*\nReply 'topup' — pay once with a ₹20/₹30 credit pack.",
-    }
-    await send_text(phone, _topup_nudge.get(lang, _topup_nudge["mr"]))
+    # Check remaining balance and warn if low/zero
+    remaining = wallet_db.get_balance(phone)
+    if remaining == 0:
+        await send_text(
+            phone,
+            "\n\n💳 *तुमचे सर्व क्रेडिट संपले.*\n'topup' लिहा आणि पुन्हा पॅक घ्या. 🌾"
+            if lang == "mr" else
+            "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
+        )
 
-    # ── Mark result delivered ──────────────────────────────────────────────
-    store.update_session_data(session_id, result_ready=True, retry_scheduled=False)
-    logger.info(f"[WalletMonitor] ✅ Response delivered to {phone[-4:]} for session {session_id}")
+    store.update_session_data(session_id, result_ready=True)
+    logger.info(
+        f"[Main] ✅ Credit delivery done | session={session_id} | "
+        f"remaining_credits={remaining}"
+    )
 # ─── DPDPA data deletion handler ──────────────────────────────────────────────
 
 async def _handle_data_deletion(
