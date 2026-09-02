@@ -123,27 +123,26 @@ COMING_SOON_KEYS = set(COMING_SOON_MESSAGES.keys())
 _TOPUP_KEYWORDS = {
     "topup", "top up", "recharge", "credits", "pack", "package",
     "रिचार्ज", "क्रेडिट", "पॅक", "शिल्लक", "balance",
-    "20", "30", "₹20", "₹30",
 }
 
 # ─── Package ad (appended after every successful routed response) ─────────────
 _PACKAGE_AD = {
     "mr": (
         "\n\n💡 *वारंवार प्रश्न विचारता? क्रेडिट पॅक घ्या:*\n"
-        "• ₹२० → ५ प्रश्न (प्रत्येकी ₹४)\n"
-        "• ₹३० → १० प्रश्न (प्रत्येकी ₹३)\n"
+        "• ₹२० → ५ प्रश्न \n"
+        "• ₹३० → १० प्रश्न\n"
         "_'topup' लिहा आणि पॅक निवडा_ 🌾"
     ),
     "hi": (
         "\n\n💡 *बार-बार सवाल पूछते हैं? क्रेडिट पैक लें:*\n"
-        "• ₹२० → ५ सवाल (₹४ प्रति सवाल)\n"
-        "• ₹३० → १० सवाल (₹३ प्रति सवाल)\n"
+        "• ₹२० → ५ सवाल \n"
+        "• ₹३० → १० सवाल \n"
         "_'topup' लिखें और पैक चुनें_ 🌾"
     ),
     "en": (
         "\n\n💡 *Ask often? Get a credit pack:*\n"
-        "• ₹20 → 5 queries (₹4 each)\n"
-        "• ₹30 → 10 queries (₹3 each)\n"
+        "• ₹20 → 5 queries \n"
+        "• ₹30 → 10 queries\n"
         "_Reply 'topup' to pick a pack_ 🌾"
     ),
 }
