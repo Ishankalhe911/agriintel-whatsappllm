@@ -708,15 +708,22 @@ async def _handle_text_message(
             )
         return
 
-    # ── Not routed — done ──────────────────────────────────────────────────
+   # ── Not routed — done ──────────────────────────────────────────────────
     if status != "routed":
         return
+
+    # 🚀 FIX: Lock the session into Credit Mode if the farmer has a balance!
+    # This ensures that when the GPS location arrives later, main.py remembers to skip Razorpay.
+    credit_balance = result.get("credit_balance", 0)
+    if credit_balance > 0:
+        store.update_session_data(session_id, payment_mode="credits")
+    else:
+        store.update_session_data(session_id, payment_mode="razorpay")
 
     # ── Routed with credits — deliver directly, no Razorpay ───────────────
     if result.get("used_credits"):
         await _deliver_with_credits(phone, session_id, detected_lang)
         return
-
     # ── Routed without credits — normal payment flow ───────────────────────
     if needs_location:
         needs_horizon = result.get("needs_horizon", False)
