@@ -1,13 +1,32 @@
 import logging
 import os
+import hashlib
 from datetime import datetime, timezone
 import psycopg2
 from typing import Optional, Tuple, Dict, Any
 from consent_log import hash_phone_number  # Reuse your existing hash function
-
+import re
 logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+HASH_SALT = os.getenv("HASH_SALT", "agri_intellect_default_salt_2026")
+
+
+def normalize_phone(phone: str) -> str:
+    """Normalizes phone numbers to standard E.164 format before hashing."""
+    digits = re.sub(r'\D', '', phone)
+    if len(digits) == 10:
+        return f"+91{digits}"
+    elif len(digits) == 12 and digits.startswith("91"):
+        return f"+{digits}"
+    return f"+{digits}"
+
+
+def hash_phone_number(phone: str) -> str:
+    """Creates an irreversible hash for DPDPA compliance."""
+    clean_phone = normalize_phone(phone)
+    salted_string = f"{clean_phone}:{HASH_SALT}"
+    return hashlib.sha256(salted_string.encode("utf-8")).hexdigest()
 class WalletDB:
     def __init__(self):
         self.db_url = os.getenv("DATABASE_URL")
