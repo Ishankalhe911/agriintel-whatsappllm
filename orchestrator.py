@@ -123,30 +123,15 @@ COMING_SOON_KEYS = set(COMING_SOON_MESSAGES.keys())
 _TOPUP_KEYWORDS = {
     "topup", "top up", "recharge", "credits", "pack", "package",
     "रिचार्ज", "क्रेडिट", "पॅक", "शिल्लक", "balance",
+    "₹20", "₹30"  # 🚀 FIX: Added ₹ so raw numbers like "15" or "20" don't hijack queries
 }
 
 # ─── Package ad (appended after every successful routed response) ─────────────
 _PACKAGE_AD = {
-    "mr": (
-        "\n\n💡 *वारंवार प्रश्न विचारता? क्रेडिट पॅक घ्या:*\n"
-        "• ₹२० → ५ प्रश्न \n"
-        "• ₹३० → १० प्रश्न\n"
-        "_'topup' लिहा आणि पॅक निवडा_ 🌾"
-    ),
-    "hi": (
-        "\n\n💡 *बार-बार सवाल पूछते हैं? क्रेडिट पैक लें:*\n"
-        "• ₹२० → ५ सवाल \n"
-        "• ₹३० → १० सवाल \n"
-        "_'topup' लिखें और पैक चुनें_ 🌾"
-    ),
-    "en": (
-        "\n\n💡 *Ask often? Get a credit pack:*\n"
-        "• ₹20 → 5 queries \n"
-        "• ₹30 → 10 queries\n"
-        "_Reply 'topup' to pick a pack_ 🌾"
-    ),
+    "mr": "\n\n💡 _(टीप: प्रत्येक वेळी पेमेंट टाळण्यासाठी 'topup' पाठवा आणि ₹२०/₹३० चा पॅक घ्या)_",
+    "hi": "\n\n💡 _(नोट: बार-बार पेमेंट से बचने के लिए 'topup' भेजें और ₹20/₹30 का पैक लें)_",
+    "en": "\n\n💡 _(Tip: Reply 'topup' to get a ₹20/₹30 credit pack and avoid paying every time)_",
 }
-
 # ─── Topup package selection message ─────────────────────────────────────────
 _TOPUP_SELECT = {
     "mr": (
@@ -1141,7 +1126,12 @@ async def orchestrate(
 
     else:  # weather
         needs_location = True
-        needs_horizon = not bool(extraction.get("harvest_date"))
+        
+        # 🚀 FIX 1: Break the infinite loop!
+        if prior.get("awaiting") == "horizon":
+            needs_horizon = False  # They just gave us the answer, don't ask again!
+        else:
+            needs_horizon = not bool(extraction.get("harvest_date"))
 
         # Save horizon state so main.py knows what the next message means
         if needs_horizon:
@@ -1171,24 +1161,30 @@ async def orchestrate(
     # ── Append package ad + low balance warning ───────────────────────────
     reply_text = ack.get(lang, ack["mr"])
     
-    # 🚀 DEDUCT THE CREDIT HERE IN THE ORCHESTRATOR
-    used_credits = False
-    if balance > 0:
-        try:
-            _credit_reader = CreditReader()
-            if _credit_reader.deduct_credit(phone):
-                balance -= 1  # Update local variable so the response is accurate
-                used_credits = True
-                logger.info(f"[Orchestrator] ✅ 1 Credit deducted for {phone[-4:]}. New balance: {balance}")
-        except Exception as e:
-            logger.error(f"[Orchestrator] 🚨 Failed to deduct credit: {e}")
+    # 🚀 FIX 2: Only deduct credits AND show ads when the query is FULLY constructed!
+    is_fully_constructed = not needs_horizon and not needs_location
+    already_deducted = prior.get("credit_deducted", False)
+    used_credits = already_deducted 
 
-    if balance == 0 and used_credits:
-        # They just used their last credit
-        reply_text += _LOW_BALANCE_WARNING.get(lang, _LOW_BALANCE_WARNING["mr"])
-    elif balance == 0 and not used_credits:
-        # per-query flow — append ad occasionally
-        reply_text += _PACKAGE_AD.get(lang, _PACKAGE_AD["mr"])
+    if is_fully_constructed:
+        # DEDUCT THE CREDIT (if not already deducted in a previous step)
+        if balance > 0 and not already_deducted:
+            try:
+                _credit_reader = CreditReader()
+                if _credit_reader.deduct_credit(phone):
+                    balance -= 1  
+                    used_credits = True
+                    # Lock it so we don't deduct again if they send a GPS pin later
+                    session_store.update_session_data(session_id, credit_deducted=True)
+                    logger.info(f"[Orchestrator] ✅ 1 Credit deducted. New balance: {balance}")
+            except Exception as e:
+                logger.error(f"[Orchestrator] 🚨 Failed to deduct credit: {e}")
+
+        # SHOW ADS / WARNINGS (Only at the very end of the flow)
+        if balance == 0 and used_credits:
+            reply_text += _LOW_BALANCE_WARNING.get(lang, _LOW_BALANCE_WARNING["mr"])
+        elif balance == 0 and not used_credits:
+            reply_text += _PACKAGE_AD.get(lang, _PACKAGE_AD["mr"])
 
     return {
         "status": "routed",
