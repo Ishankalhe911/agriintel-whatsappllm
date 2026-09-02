@@ -364,10 +364,9 @@ async def _handle_paid(
             )
         else:
             await send_text(phone, _msg("delivery_error", lang))
-        
+        return   # ← ADD THIS
 
-    
-        logger.info(f"[WalletMonitor] ✅ Query delivered for session {session_id}")
+    logger.info(f"[WalletMonitor] ✅ Query delivered for session {session_id}")
   
 
     # ── Format and send to farmer ──────────────────────────────────────────
@@ -401,6 +400,13 @@ async def _handle_paid(
 
     # ── Mark result delivered ──────────────────────────────────────────────
     store.update_session_data(session_id, result_ready=True, retry_scheduled=False)
+        # Topup nudge — farmer just got value, highest receptivity moment
+    _topup_nudge = {
+        "mr": "\n\n💡 *वारंवार प्रश्न विचारता?*\n'topup' लिहा — ₹२०/₹३० पॅकमध्ये पेमेंट एकदाच करा.",
+        "hi": "\n\n💡 *बार-बार सवाल पूछते हैं?*\n'topup' लिखें — ₹20/₹30 पैक में एक बार पेमेंट करें।",
+        "en": "\n\n💡 *Ask often?*\nReply 'topup' — pay once with a ₹20/₹30 credit pack.",
+    }
+    await send_text(phone, _topup_nudge.get(lang, _topup_nudge["mr"]))
     logger.info(f"[WalletMonitor] ✅ Response delivered to {phone[-4:]} for session {session_id}")
 # ─── Top-Up Paid Handler ──────────────────────────────────────────────────────
 
@@ -764,13 +770,10 @@ async def _retry_delivery_after_delay(
             f"{result.get('error_type')}"
         )
         await send_text(phone, _msg("delivery_error", lang))
-        
+        return
 
-    # 🚀 ========================================================== 🚀
-    # 🚀 FINANCIAL AUDIT LOGGING (For Successful Retries)
-    # 🚀 ========================================================== 🚀
-        logger.info(f"[WalletMonitor] ✅ Retry query delivered for session {session_id}")
-    # 🚀 ========================================================== 🚀
+    logger.info(f"[WalletMonitor] ✅ Retry query delivered for session {session_id}")
+
 
     try:
         formatted = await format_response_for_whatsapp(

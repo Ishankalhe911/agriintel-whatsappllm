@@ -749,9 +749,9 @@ async def orchestrate(
         reply_id = prior.get("last_button_reply_id", "")  # set by main.py on button reply
         # Also accept text "pack20" / "pack30" / "20" / "30"
         picked_pack = None
-        if "pack_20" in msg_lower or "pack20" in msg_lower or msg_lower.strip() == "20":
+        if msg_lower.strip() in ("pack_20", "pack20") or "pack_20" in msg_lower or msg_lower.strip() == "20":
             picked_pack = "PACK_20"
-        elif "pack_30" in msg_lower or "pack30" in msg_lower or msg_lower.strip() == "30":
+        elif msg_lower.strip() in ("pack_30", "pack30") or "pack_30" in msg_lower or msg_lower.strip() == "30":
             picked_pack = "PACK_30"
 
         if picked_pack:
@@ -1162,12 +1162,14 @@ async def orchestrate(
     reply_text = ack.get(lang, ack["mr"])
     
     # 🚀 FIX 2: Only deduct credits AND show ads when the query is FULLY constructed!
+    # fertilizer excluded — _deliver_with_credits() in main.py owns deduction
+    # mandi/weather excluded when needs_location=True (location not yet collected)
+    # Only deduct here for the intermediate ack steps that don't involve delivery
     is_fully_constructed = not needs_horizon and not needs_location
     already_deducted = prior.get("credit_deducted", False)
-    used_credits = already_deducted 
+    used_credits = already_deducted
 
-    if is_fully_constructed:
-        # DEDUCT THE CREDIT (if not already deducted in a previous step)
+    if is_fully_constructed and service_type != "fertilizer":
         if balance > 0 and not already_deducted:
             try:
                 _credit_reader = CreditReader()
@@ -1180,12 +1182,13 @@ async def orchestrate(
             except Exception as e:
                 logger.error(f"[Orchestrator] 🚨 Failed to deduct credit: {e}")
 
-        # SHOW ADS / WARNINGS (Only at the very end of the flow)
-        if balance == 0 and used_credits:
+                # Low balance warning only — no ads during routing
+        if balance == 1 and used_credits:
             reply_text += _LOW_BALANCE_WARNING.get(lang, _LOW_BALANCE_WARNING["mr"])
-        elif balance == 0 and not used_credits:
-            reply_text += _PACKAGE_AD.get(lang, _PACKAGE_AD["mr"])
-
+    # For fertilizer with credits: signal main.py to use credit delivery
+    # (deduction happens in _deliver_with_credits, not here)
+    if service_type == "fertilizer" and balance > 0 and not already_deducted:
+        used_credits = True
     return {
         "status": "routed",
         "service_type": service_type,

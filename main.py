@@ -373,14 +373,15 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
             )
             return
 
-                # ── Store button reply id so orchestrator topup selection can read it ──
         if session:
             store.update_session_data(
                 session.get("session_id", ""),
                 last_button_reply_id=reply_id,
             )
-        # ── All other button/list replies — treat as fresh text ──────────
-        text = reply_title or reply_id
+        # ── For topup package buttons, use reply_id not reply_title ──────
+        # reply_id = "PACK_20"/"PACK_30", reply_title = "₹20 — 5 प्रश्न"
+        # Passing reply_title would re-trigger topup_select via ₹20 keyword
+        text = reply_id or reply_title
         await _handle_text_message(phone, text, session, lang)
     
     
@@ -590,10 +591,14 @@ async def _handle_text_message(
                 return
 
         elif current_status == "paid":
-            # PREVENT STATE LEAK: Old session is finished. 
-            # Clear it from Redis and set local variable to None so a fresh one is created below.
             store.clear_session(session.get("session_id"))
             session = None
+            _repeat_nudge = {
+                "mr": "💡 _(वारंवार प्रश्न विचारता? 'topup' लिहा आणि ₹२०/₹३० पॅक घ्या — प्रत्येक वेळी पेमेंट नको)_\n\n",
+                "hi": "💡 _(बार-बार पूछते हैं? 'topup' लिखें और ₹20/₹30 पैक लें — हर बार पेमेंट नहीं)_\n\n",
+                "en": "💡 _(Ask often? Reply 'topup' for a ₹20/₹30 credit pack — no payment each time)_\n\n",
+            }
+            await send_text(phone, _repeat_nudge.get(lang, _repeat_nudge["mr"]))
 
     # ── Create a skeleton session if none exists ───────────────────────────
     # create_session requires crop, qty, intent, service_type but we don't
@@ -660,7 +665,6 @@ async def _handle_text_message(
             ],
         )
         return
-    status = result.get("status")
     # ── Topup: farmer picked a package → create topup payment link ─────────
     if status == "topup_payment":
         package_id = result.get("package_id")
@@ -996,14 +1000,18 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         # Don't deduct — delivery failed
         return
 
-    # ── Deduct credit atomically AFTER successful delivery ─────────────────
-    deducted = wallet_db.deduct_credit(phone)
-    if not deducted:
-        logger.warning(
-            f"[Main] Credit deduction returned False for {phone[-4:]} "
-            f"— balance may have hit 0 between check and deduct"
-        )
-        # Still send the response — farmer gets data, we absorb the edge case
+           # For fertilizer: deduct here after successful delivery
+    # For mandi/weather: already deducted in orchestrator at location-collection step
+    session_data = store.get_session(session_id) or {}
+    if not session_data.get("credit_deducted", False):
+        deducted = wallet_db.deduct_credit(phone)
+        if deducted:
+            store.update_session_data(session_id, credit_deducted=True)
+            logger.info(f"[Main] 💳 Credit deducted post-delivery for {phone[-4:]}")
+        else:
+            logger.warning(f"[Main] Credit deduction returned False for {phone[-4:]}")
+    else:
+        logger.info(f"[Main] 💳 Credit already deducted at routing for {phone[-4:]}")
 
     # ── Format and send ────────────────────────────────────────────────────
     try:
@@ -1023,21 +1031,17 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
 
     await send_text(phone, formatted)
 
-    # Check remaining balance and warn if low/zero
-    remaining = wallet_db.get_balance(phone)
-    if remaining == 0:
-        await send_text(
-            phone,
-            "\n\n💳 *तुमचे सर्व क्रेडिट संपले.*\n'topup' लिहा आणि पुन्हा पॅक घ्या. 🌾"
-            if lang == "mr" else
-            "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
-        )
+    # Topup nudge — highest receptivity moment, right after value delivery
+    _topup_nudge = {
+        "mr": "💡 *वारंवार प्रश्न विचारता?*\n'topup' लिहा — ₹२०/₹३० पॅकमध्ये पेमेंट एकदाच करा.",
+        "hi": "💡 *बार-बार सवाल पूछते हैं?*\n'topup' लिखें — ₹20/₹30 पैक में एक बार पेमेंट करें।",
+        "en": "💡 *Ask often?*\nReply 'topup' — pay once with a ₹20/₹30 credit pack.",
+    }
+    await send_text(phone, _topup_nudge.get(lang, _topup_nudge["mr"]))
 
-    store.update_session_data(session_id, result_ready=True)
-    logger.info(
-        f"[Main] ✅ Credit delivery done | session={session_id} | "
-        f"remaining_credits={remaining}"
-    )
+    # ── Mark result delivered ──────────────────────────────────────────────
+    store.update_session_data(session_id, result_ready=True, retry_scheduled=False)
+    logger.info(f"[WalletMonitor] ✅ Response delivered to {phone[-4:]} for session {session_id}")
 # ─── DPDPA data deletion handler ──────────────────────────────────────────────
 
 async def _handle_data_deletion(
