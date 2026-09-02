@@ -640,7 +640,7 @@ async def _handle_text_message(
         await send_text(phone, "⚠️ तांत्रिक अडचण. कृपया पुन्हा प्रयत्न करा.")
         return
 
-        status         = result.get("status")
+    status         = result.get("status")
     reply_message  = result.get("reply_message", "")
     needs_location = result.get("needs_location", False)
     detected_lang  = result.get("detected_language", lang)
