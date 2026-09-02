@@ -639,6 +639,7 @@ async def _handle_text_message(
             message       = text,
             session_store = store,
             session_id    = session_id,
+            phone         = phone,
         )
     except Exception as e:
         logger.error(f"[Main] Orchestrator exception: {e}")

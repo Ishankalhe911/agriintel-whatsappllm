@@ -702,6 +702,7 @@ async def orchestrate(
     message: str,
     session_store,
     session_id: str,
+    phone: str,  # 🚀 FIX 1: Add phone parameter here
 ) -> dict:
     """
     Main entry point. Called by main.py on every farmer WhatsApp message.
@@ -722,7 +723,7 @@ async def orchestrate(
     logger.info(f"[Orchestrator] Processing: '{message[:60]}'")
 
     prior = session_store.get_session(session_id) or {}
-    phone = session_id  # session_id IS the phone (wa_id) in your architecture
+    
 
     # ── TOPUP INTENT CHECK — before everything else ───────────────────────
     msg_lower = message.strip().lower()
