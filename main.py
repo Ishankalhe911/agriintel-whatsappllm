@@ -660,7 +660,7 @@ async def _handle_text_message(
             ],
         )
         return
-
+    status = result.get("status")
     # ── Topup: farmer picked a package → create topup payment link ─────────
     if status == "topup_payment":
         package_id = result.get("package_id")
