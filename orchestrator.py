@@ -728,7 +728,7 @@ async def orchestrate(
     msg_lower = message.strip().lower()
     is_topup_intent = any(kw in msg_lower for kw in _TOPUP_KEYWORDS)
 
-    if is_topup_intent and prior.get("awaiting") not in ["crop", "pest_confirmation", "horizon"]:
+    if is_topup_intent and prior.get("awaiting") not in ["crop", "pest_confirmation", "horizon","topup_package"]:
         lang = prior.get("language", "mr")
         session_store.update_session_data(session_id, awaiting="topup_package", session_type="topup")
         return {
