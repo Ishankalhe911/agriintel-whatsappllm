@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import random
+import asyncio
 from typing import Optional
 # ─── Credit reader (read+deduct only — no grant path) ────────────────────────
 from wallet_db import WalletDB as CreditReader   # get_balance + deduct only
@@ -793,9 +794,17 @@ async def orchestrate(
     try:
         _credit_reader = CreditReader()
         balance = _credit_reader.get_balance(phone)
+        if balance == 0:
+            logger.info(f"[Orchestrator] Balance 0 on first read — retrying in 5s (Neon lag guard)")
+            await asyncio.sleep(5)
+            balance = _credit_reader.get_balance(phone)
+            if balance == 0:
+                logger.info(f"[Orchestrator] Balance 0 on second read — retrying in 10s")
+                await asyncio.sleep(10)
+                balance = _credit_reader.get_balance(phone)
     except Exception as e:
-        logger.warning(f"[Orchestrator] Credit check failed (non-fatal): {e}")
-        balance = 0  # fail-open → falls through to per-query flow
+         logger.warning(f"[Orchestrator] Credit check failed (non-fatal): {e}")
+         balance = 0
 
     logger.info(f"[Orchestrator] Credit balance for {phone[-4:]}: {balance}")
     # balance > 0 → deduction happens in wallet_monitor after delivery

@@ -593,12 +593,17 @@ async def _handle_text_message(
         elif current_status == "paid":
             store.clear_session(session.get("session_id"))
             session = None
-            _repeat_nudge = {
-                "mr": "💡 _(वारंवार प्रश्न विचारता? 'topup' लिहा आणि ₹२०/₹३० पॅक घ्या — प्रत्येक वेळी पेमेंट नको)_\n\n",
-                "hi": "💡 _(बार-बार पूछते हैं? 'topup' लिखें और ₹20/₹30 पैक लें — हर बार पेमेंट नहीं)_\n\n",
-                "en": "💡 _(Ask often? Reply 'topup' for a ₹20/₹30 credit pack — no payment each time)_\n\n",
-            }
-            await send_text(phone, _repeat_nudge.get(lang, _repeat_nudge["mr"]))
+            try:
+                existing_balance = wallet_db.get_balance(normalize_phone(phone))
+            except Exception:
+                existing_balance = 0
+            if existing_balance == 0:
+                _repeat_nudge = {
+                    "mr": "💡 _(वारंवार प्रश्न विचारता? 'topup' लिहा आणि ₹२०/₹३० पॅक घ्या — प्रत्येक वेळी पेमेंट नको)_\n\n",
+                    "hi": "💡 _(बार-बार पूछते हैं? 'topup' लिखें और ₹20/₹30 पैक लें — हर बार पेमेंट नहीं)_\n\n",
+                    "en": "💡 _(Ask often? Reply 'topup' for a ₹20/₹30 credit pack — no payment each time)_\n\n",
+                }
+                await send_text(phone, _repeat_nudge.get(lang, _repeat_nudge["mr"]))
 
     # ── Create a skeleton session if none exists ───────────────────────────
     # create_session requires crop, qty, intent, service_type but we don't
@@ -722,6 +727,27 @@ async def _handle_text_message(
 
     # ── Routed with credits — deliver directly, no Razorpay ───────────────
     if result.get("used_credits"):
+        # 🚀 CRITICAL: Lock into credit mode so the location handler remembers!
+        store.update_session_data(session_id, payment_mode="credits")
+        
+        if result.get("needs_horizon"):
+            # Horizon not yet answered — send buttons first, don't deliver yet
+            store.update_session_data(session_id, horizon_asked=True)
+            await send_buttons(
+                to=phone,
+                body_text={
+                    "mr": "तुम्हाला किती दिवसांचा हवामान अंदाज हवा आहे?",
+                    "hi": "कितने दिनों का मौसम अनुमान चाहिए?",
+                    "en": "How many days of weather forecast do you need?",
+                }.get(detected_lang, "तुम्हाला किती दिवसांचा हवामान अंदाज हवा आहे?"),
+                buttons=[
+                    ("horizon_15d", "१५ दिवस"),
+                    ("horizon_1m",  "१ महिना"),
+                    ("horizon_2m",  "२ महिने"),
+                ],
+            )
+            return
+            
         await _deliver_with_credits(phone, session_id, detected_lang)
         return
     # ── Routed without credits — normal payment flow ───────────────────────
@@ -1049,7 +1075,8 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
             "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
         )
 
-    store.update_session_data(session_id, result_ready=True)
+    store.update_session_data(session_id, payment_status="paid", result_ready=True)
+    logger.info(f"[Main] ✅ Credit session marked paid | session={session_id}")
     logger.info(
         f"[Main] ✅ Credit delivery done | session={session_id} | "
         f"remaining_credits={remaining}"
