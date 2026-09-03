@@ -155,7 +155,9 @@ async def format_weather_response(
 
 ━━━ DATE ANCHOR — JSON वाचण्यापूर्वी हे वाचा ━━━
 आजची तारीख: {today_iso} ({today_human}). वेळ: {current_time} IST.
-daily_preview मधील प्रत्येक entry FORECAST आहे — {today_iso} सुद्धा forecast च आहे, skip करू नका.
+⚠️ CRITICAL TEMPORAL RULE: जर शेतकऱ्याने "उद्या" (tomorrow) विचारले असेल, तर फक्त {today_iso} च्या पुढच्या तारखेचा (next day) डेटा दाखवा. आजचा डेटा सांगू नका. 
+जर शेतकऱ्याने विशिष्ट दिवस विचारले असतील (उदा. "१५ दिवस"), तर JSON मधील सर्व १५ दिवस दाखवा, ७ वर कापू नका.
+daily_preview मधील प्रत्येक entry FORECAST आहे — {today_iso} सुद्धा forecast च आहे.
 Date display rule: YYYY-MM-DD → "२२ ऑगस्ट" (फक्त दिवस + मराठी महिना).
 Date mapping: "आज"→{today_iso} | "उद्या"→पुढची date | "परवा"→त्यानंतरची.
 heavy_rain_days / heat_stress_days मधील number म्हणजे day index (1=आज).
@@ -357,7 +359,7 @@ RAIN_FOCUSED (पावसाबद्दल विचारले):
   Spray windows → skip
 
 GENERAL_WEATHER (default):
-  Step 1 → daily_preview: पहिले ७ दिवस (date→मराठी, rain_mm, t_max_c, wind_kmh, wcode emoji)
+  Step 1 → daily_preview: JSON मधील सर्व उपलब्ध दिवस दाखवा (date→मराठी, rain_mm, t_max_c, wind_kmh, wcode emoji). कधीही ७ दिवसांवर थांबवू नका, सर्व डेटा वापरा.
   Step 2 → net_water_balance_7d → सिंचन सल्ला (threshold प्रमाणे)
   Step 3 → growth_stage + GDD असेल → पीक अवस्था सल्ला
   Step 4 → best_spray_window_by_day: फक्त आज + उद्याचे windows (संक्षिप्त, नियम १ नुसार)
