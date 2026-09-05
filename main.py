@@ -582,8 +582,11 @@ async def _handle_text_message(
                                 f"[Main] Geocoded text location '{text}' → "
                                 f"lat={lat}, lon={lon} for session {session_id}"
                             )
-                            await _send_payment(phone, session_id, lang)
-                            return
+                            # Credit mode: deliver directly, don't create Razorpay link
+                            if session and session.get("payment_mode") == "credits":
+                                await _deliver_with_credits(phone, session_id, lang)
+                            else:
+                                await _send_payment(phone, session_id, lang)
 
             # Check if they have a payment link id — if so, remind them
             if session and session.get("payment_link_id"):
