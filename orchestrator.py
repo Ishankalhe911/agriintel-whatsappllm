@@ -820,6 +820,10 @@ async def orchestrate(
 
         is_skip = any(kw in msg_clean for kw in SKIP_PEST_KEYWORDS)
 
+        # 🚀 FIX: Calculate credit status BEFORE the early return!
+        already_deducted = prior.get("credit_deducted", False)
+        used_credits = (balance > 0 and not already_deducted)
+
         if is_skip:
             session_store.update_session_data(
                 session_id,
@@ -842,6 +846,8 @@ async def orchestrate(
                 "session_updated": True, "detected_language": lang,
                 "crop": crop, "qty": None,
                 "needs_location": False, "needs_horizon": False,
+                "used_credits": used_credits,       # 🚀 ADDED SO MAIN.PY KNOWS!
+                "credit_balance": balance,          # 🚀 ADDED SO MAIN.PY KNOWS!
             }
         else:
             session_store.update_session_data(
@@ -865,8 +871,9 @@ async def orchestrate(
                 "session_updated": True, "detected_language": lang,
                 "crop": crop, "qty": None,
                 "needs_location": False, "needs_horizon": False,
+                "used_credits": used_credits,       # 🚀 ADDED SO MAIN.PY KNOWS!
+                "credit_balance": balance,          # 🚀 ADDED SO MAIN.PY KNOWS!
             }
-
     # ── Stage 1: Preflight ──────────────────────────────────────────────────
     lang = "mr"  # Default until extraction detects language
 
@@ -1015,8 +1022,6 @@ async def orchestrate(
         }
 
     # ── NEW (Fix 17): Sowing-intent bypass — BEFORE pest_mentioned check ──
-    # A farmer who is sowing has no pest to report yet. Never ask "what pest
-    # do you see" and never fall through to the PGR path either.
     if service_type == "fertilizer" and extraction.get("sowing_intent"):
         session_store.update_session_data(
             session_id,
@@ -1037,6 +1042,8 @@ async def orchestrate(
             "session_updated": True, "detected_language": lang,
             "crop": crop, "qty": None,
             "needs_location": False, "needs_horizon": False,
+            "used_credits": (balance > 0 and not prior.get("credit_deducted", False)), # 🚀 ADDED
+            "credit_balance": balance,                                                 # 🚀 ADDED
         }
 
     # ── Fertilizer route: confirm crop + pest BEFORE payment (Fix 13) ──────
