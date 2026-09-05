@@ -1184,15 +1184,14 @@ async def orchestrate(
             try:
                 _credit_reader = CreditReader()
                 if _credit_reader.deduct_credit(phone):
-                    balance -= 1  
+                    balance -= 1
                     used_credits = True
-                    # Lock it so we don't deduct again if they send a GPS pin later
                     session_store.update_session_data(session_id, credit_deducted=True)
                     logger.info(f"[Orchestrator] ✅ 1 Credit deducted. New balance: {balance}")
             except Exception as e:
                 logger.error(f"[Orchestrator] 🚨 Failed to deduct credit: {e}")
 
-                # Low balance warning only — no ads during routing
+        # Low balance warning only — no ads during routing
         if balance == 1 and used_credits:
             reply_text += _LOW_BALANCE_WARNING.get(lang, _LOW_BALANCE_WARNING["mr"])
     # For fertilizer with credits: signal main.py to use credit delivery
