@@ -587,8 +587,9 @@ async def _handle_text_message(
                                 await _deliver_with_credits(phone, session_id, lang)
                             else:
                                 await _send_payment(phone, session_id, lang)
-
-            # Check if they have a payment link id — if so, remind them
+                            
+                            # 🚀 CRITICAL FIX: Stop execution so it doesn't hit the orchestrator!
+                            return
             if session and session.get("payment_link_id"):
                 await send_text(phone, _AWAITING_PAYMENT_MSG.get(lang, _AWAITING_PAYMENT_MSG["mr"]))
                 return
