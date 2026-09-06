@@ -776,6 +776,10 @@ covers_all_pests         → true असेल तर सर्व कीड/र
 pests_covered[]          → हे औषध नक्की कोणत्या कीड/रोगासाठी आहे (seed_treatment साठी सहसा रिकामे — skip करा)
 dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
 dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
+dosage.dose_unit         → डोसचे खरे एकक: "kg"/"g"/"ml"/"l" — याच शब्दाला मराठीत भाषांतर करून वापरा
+                            (kg→किलो, g→ग्राम, ml→मिली, l→लिटर). null असेल तर एकक अजिबात लिहू नका.
+dosage.dose_unit_confidence → "high" म्हणजे एकक थेट DB मधून खात्रीशीर आहे,
+                            "low" म्हणजे अंदाज आहे — तेव्हा सोबत caution द्यावी लागते
 dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
 dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
                             seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा
@@ -787,10 +791,14 @@ diy_homemade_options[]   → घरगुती/DIY उपाय (फक्त b
 
 ━━━ DOSAGE & UNIT RULE (CRITICAL) ━━━
 १. एकर (Acre) ला प्राधान्य: JSON मध्ये 'formulation_dose_per_acre' असल्यास तोच आकडा वापरा आणि पुढे "प्रति एकर" लिहा. ते नसल्यासच 'formulation_dose' वापरून "प्रति हेक्टर" लिहा.
-२. योग्य एकक (Unit): औषधाच्या नावात (chemical_name) खालीलपैकी शब्द असल्यास योग्य एकक लावा:
-   - EC, SC, SL, CS, ZC, ZE, ZW, EW, ME, OD, FS असल्यास आकड्यापुढे "मिली" (ml) लिहा.
-   - WP, WDG, WG, DF, SP, SG, GR, DP असल्यास "ग्राम" (gm) लिहा.
-   - काहीच समजले नाही तर "मिली/ग्राम" लिहा.
+२. योग्य एकक (Unit): एकक कधीही स्वतःहून guess करू नका — फक्त dosage.dose_unit मधलाच शब्द वापरा:
+   - dosage.dose_unit == "kg" → "किलो" म्हणा (कधीही "ग्राम" म्हणू नका)
+   - dosage.dose_unit == "g"  → "ग्राम" म्हणा
+   - dosage.dose_unit == "ml" → "मिली" म्हणा
+   - dosage.dose_unit == "l"  → "लिटर" म्हणा
+   - dosage.dose_unit == null → संख्येसोबत कोणतेही एकक न लिहिता वाक्याच्या शेवटी
+     "(अचूक प्रमाणासाठी औषधाच्या पाकिटावरील लेबल पहा)" असे स्पष्ट सांगा
+   - dosage.dose_unit_confidence == "low" असेल → वाक्यात "(अंदाजे — पक्के प्रमाण लेबलवर तपासा)" ही caution जोडा
 ३. पाणी (Water): 'water_dilution_per_acre' असल्यास "[X] लिटर पाणी प्रति एकर" सांगा. नसल्यास 'water_dilution' वापरून "[X] लिटर पाणी प्रति हेक्टर" सांगा.
 ४. पंप (Pump): JSON मध्ये 'formulation_dose_per_15L_pump' असल्यास "*(१५ लिटर पंपासाठी: [value] मिली/ग्राम)*" असे ठळकपणे सांगा. हे नसेल तरच "*(१५ किंवा २० लिटरच्या पंपासाठी योग्य प्रमाण काढा)*" ही टीप जोडा.
 ५. AI Dose: 'ai_dose' कंसात "(सक्रिय घटक: [X])" असे लिहा.
@@ -882,7 +890,7 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 - *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
 [has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत]
-- *डोस:* [formulation_dose_per_acre किंवा formulation_dose] [unit: मिली/ग्राम] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump] मिली/ग्राम)*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
+- *डोस:* [formulation_dose_per_acre किंवा formulation_dose] [dosage.dose_unit वरून एकक — किलो/ग्राम/मिली/लिटर, null असेल तर एकक न लिहिता लेबल-पहा टीप] [प्रति एकर / प्रति हेक्टर] [dose_unit_confidence == "low": (अंदाजे — पक्के प्रमाण लेबलवर तपासा)] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump] [तेच एकक])*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
 [water_dilution_per_acre किंवा water_dilution:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
 [dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
 [pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
@@ -898,7 +906,7 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 - DOSE: dosage मधील values null/रिकामे → "कृषी सेवा केंद्रात विचारा" — स्वतःहून कधीही सांगू नका.
 - NO ROUNDING: dosage.formulation_dose, dosage.ai_dose, किंवा कोणतेही डोस फक्त JSON मधील EXACT values वापरा — round off करू नका.
 - NO MATH: dosage.formulation_dose_per_acre किंवा water_dilution_per_acre असल्यास फक्त JSON मधील exact number वापरा — स्वतः ÷2.47 calculate करण्याची चूक करू नका.
-- UNITS: प्रति हेक्टर किंवा प्रति एकर आकडा 'मिली' किंवा 'ग्राम' एकक न सांगता कधीही देऊ नका.
+- UNITS: प्रति हेक्टर किंवा प्रति एकर आकडा एकक न सांगता कधीही देऊ नका. ⚠️ एकक फक्त dosage.dose_unit मधूनच घ्या (kg/g/ml/l → किलो/ग्राम/मिली/लिटर) — formulation type (WP/WG/EC/SC इ.) पाहून किंवा स्वतःच्या अंदाजाने एकक कधीही ठरवू नका. dose_unit_confidence == "low" असेल तर "(अंदाजे — पक्के प्रमाण लेबलवर तपासा)" ही caution जोडा.
 - BRANDS: has_brand_info = false → brands/companies section पूर्णपणे skip करा. नवे नाव कधीही जोडू नका.
 - BIFURCATION: JSON मध्ये नसलेली कोणतीही category (उदा. fungicide नसेल तर) output मध्ये दाखवू नका.
 - LENGTH LIMIT (CRITICAL): WhatsApp च्या 4000 अक्षरांच्या मर्यादेमुळे, प्रत्येक Category मध्ये (उदा. कीटकनाशक) जास्तीत जास्त ३ च पर्याय (Options) दाखवा. JSON मध्ये ५ असले तरी फक्त पहिले ३ द्या आणि उर्वरित वगळा.
