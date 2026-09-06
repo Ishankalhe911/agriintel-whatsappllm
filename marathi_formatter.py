@@ -833,8 +833,8 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 - *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
 [has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत — उदा. बियाण्यास चोळून लावा]
-- *डोस:* [DOSAGE RULE नुसार]
-[dosage.water_dilution:] - *पाणी:* [value] लिटरमध्ये मिसळा
+- *डोस:* [formulation_dose.value] [formulation_dose.unit मराठीत] प्रति किलो बियाणासाठी
+[dosage.water_dilution.value:] - *पाणी:* [dosage.water_dilution.value] [dosage.water_dilution.unit मराठीत] मध्ये मिसळा
 
 ⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
 हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
