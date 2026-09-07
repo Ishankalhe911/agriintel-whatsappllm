@@ -1069,15 +1069,23 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
 
     await send_text(phone, formatted)
 
-    # Check remaining balance and warn if low/zero
-    remaining = wallet_db.get_balance(phone)
-    if remaining == 0:
-        await send_text(
-            phone,
-            "\n\n💳 *तुमचे सर्व क्रेडिट संपले.*\n'topup' लिहा आणि पुन्हा पॅक घ्या. 🌾"
-            if lang == "mr" else
-            "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
-        )
+# Check remaining balance and always inform the farmer
+remaining = wallet_db.get_balance(phone)
+
+if remaining == 0:
+    credit_status_msg = (
+        "\n\n💳 *तुमचे सर्व क्रेडिट संपले.*\n'topup' लिहा आणि पुन्हा पॅक घ्या. 🌾"
+        if lang == "mr" else
+        "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
+    )
+else:
+    credit_status_msg = {
+        "mr": f"\n\n💳 *1 क्रेडिट वापरला.* शिल्लक क्रेडिट: *{remaining}*",
+        "hi": f"\n\n💳 *1 क्रेडिट उपयोग हुआ।* शेष क्रेडिट: *{remaining}*",
+        "en": f"\n\n💳 *1 credit used.* Remaining credits: *{remaining}*",
+    }.get(lang, f"\n\n💳 1 credit used. Remaining: {remaining}")
+
+await send_text(phone, credit_status_msg)
 
     store.update_session_data(session_id, payment_status="paid", result_ready=True)
     logger.info(f"[Main] ✅ Credit session marked paid | session={session_id}")
