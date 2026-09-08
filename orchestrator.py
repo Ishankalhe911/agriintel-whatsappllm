@@ -982,7 +982,11 @@ async def orchestrate(
         reply = CLARIFICATION_MESSAGES["service"].get(
             lang, CLARIFICATION_MESSAGES["service"]["mr"]
         )
-        session_store.update_session_data(session_id, awaiting="service")
+        session_store.update_session_data(
+            session_id,
+            awaiting="service",
+            original_message=prior.get("original_message") or message,
+        )
         return {
             "status": "needs_clarification",
             "service_type": None,
