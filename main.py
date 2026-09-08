@@ -339,26 +339,39 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
         reply_id    = msg.get("reply_id") or ""
         reply_title = msg.get("reply_title") or ""
 
-        # ── Horizon button reply ──────────────────────────────────────────
+                # ── Horizon button reply ──────────────────────────────────────────
         if reply_id in ("horizon_15d", "horizon_1m", "horizon_2m") and session:
             session_id = session.get("session_id", "")
-            
+
             today = date.today()
             horizon_map = {
-                "horizon_15d": timedelta(days=15),
-                "horizon_1m":  timedelta(days=30),
-                "horizon_2m":  timedelta(days=60),
+                "horizon_15d": {"days": 15, "forecast_days": 16},
+                "horizon_1m":  {"days": 30, "forecast_days": 16},
+                "horizon_2m":  {"days": 60, "forecast_days": 16},
             }
-            harvest_date = (today + horizon_map[reply_id]).strftime("%Y-%m-%d")
+
+            selected = horizon_map[reply_id]
+
+            harvest_date = (
+                today + timedelta(days=selected["days"])
+            ).strftime("%Y-%m-%d")
+
+            forecast_days = selected["forecast_days"]
+
             success = store.update_session_data(
                 session_id,
-                harvest_date  = harvest_date,
-                horizon_asked = False,
+                harvest_date=harvest_date,
+                forecast_days=forecast_days,
+                horizon_asked=False,
             )
+
             logger.info(
-                f"[Main] Horizon resolved: {reply_id} → harvest_date={harvest_date} "
-                f"for session {session_id} (save={'ok' if success else 'FAILED'})"
+                f"[Main] Horizon resolved: {reply_id} → "
+                f"harvest_date={harvest_date}, forecast_days={forecast_days} "
+                f"for session {session_id} "
+                f"(save={'ok' if success else 'FAILED'})"
             )
+
             dpdpa_consent = (
                 "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे.\n"
                 "आपले स्थान फक्त या विनंतीसाठी वापरले जाईल."
@@ -366,10 +379,13 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
                 "📍 *Location*: We need your location for accurate results.\n"
                 "It will only be used for this request."
             )
+
             await send_text(phone, dpdpa_consent)
             await send_location_request(
-                to        = phone,
-                body_text = _LOCATION_REQUEST_TEXT.get(lang, _LOCATION_REQUEST_TEXT["mr"]),
+                to=phone,
+                body_text=_LOCATION_REQUEST_TEXT.get(
+                    lang, _LOCATION_REQUEST_TEXT["mr"]
+                ),
             )
             return
 
