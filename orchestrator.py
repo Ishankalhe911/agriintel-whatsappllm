@@ -1010,6 +1010,7 @@ async def orchestrate(
             symptom=extraction.get("symptom"),
             category_intent=extraction.get("category_intent"),
             language=lang,
+            original_message=prior.get("original_message") or message,
             awaiting="crop",
         )
         reply = CLARIFICATION_MESSAGES["crop"].get(lang, CLARIFICATION_MESSAGES["crop"]["mr"])
@@ -1067,6 +1068,7 @@ async def orchestrate(
                 qty=extraction.get("qty"),
                 variety=extraction.get("variety"),
                 language=lang,
+                original_message=prior.get("original_message") or message,
                 awaiting="pest_confirmation",
             )
             msg_template = CLARIFICATION_MESSAGES["pest_confirm"].get(
