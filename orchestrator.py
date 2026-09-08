@@ -1097,7 +1097,7 @@ async def orchestrate(
         symptom=extraction.get("symptom"),
         category_intent=extraction.get("category_intent"),
         language=lang,
-        original_message=message,
+        original_message=prior.get("original_message") or message,
         raw_intent=extraction.get("raw_intent", ""),
         awaiting=None,  # WIPE MEMORY ON SUCCESS
     )
