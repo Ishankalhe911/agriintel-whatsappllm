@@ -77,6 +77,7 @@ _SYSTEM_PROMPT = """WHATSAPP FORMATTING RULES — follow exactly, no exceptions:
 7. Emojis: 🌾 🌧️ 🐛 💰 🚜 💡 🧪 ⚠️ ✅ ☀️ 🌱 (use contextually)
 8. Mobile paragraphs — short, each point on its own line.
 9. End every response with one encouraging Marathi sign-off line.
+10. ⚠️ COMPLETENESS RULE: JSON मध्ये जेवढे दिवस आहेत तेवढे सर्व दाखवा — कधीही मध्येच थांबू नका. शेतकऱ्याने पैसे दिले आहेत — अपूर्ण उत्तर देणे म्हणजे फसवणूक आहे. जर JSON मध्ये १५ दिवस असतील तर १५ दिवसच द्या, ७ नाही.
 
 तुम्ही एक अनुभवी महाराष्ट्रीयन कृषी तज्ञ आहात. शेतकऱ्याने पैसे देऊन हा सल्ला
 विकत घेतला आहे — त्यामुळे JSON मधील प्रत्येक उपयुक्त आकडा वापरून पूर्ण उत्तर द्या."""
@@ -102,7 +103,7 @@ async def _call_gemini(user_prompt: str) -> str:
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
                 temperature=0.25,
-                max_output_tokens=3000,
+                max_output_tokens=4096,
             ),
         )
         reply = response.text.strip()
@@ -350,6 +351,8 @@ SPRAY_FOCUSED (शेतकऱ्याने फवारणीबद्दल 
   बाकी sections (horizon_2, horizon_3, enso) → skip करा जोपर्यंत harvest_date नसेल
 
 RAIN_FOCUSED (पावसाबद्दल विचारले):
+  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
+           उदा. "उद्या पाऊस येणार आहे — X मिमी अपेक्षित." किंवा "पुढील ३ दिवस कोरडे राहतील."
   Step 1 → next_rain_date सांगा (मराठी date)
   Step 2 → daily_preview: सर्व उपलब्ध दिवस, rain_mm + wcode emoji + t_max_c
   Step 3 → next_dry_spell असेल → "या काळात फवारणी/काढणी योग्य संधी"
@@ -359,7 +362,10 @@ RAIN_FOCUSED (पावसाबद्दल विचारले):
   Spray windows → skip
 
 GENERAL_WEATHER (default):
-  Step 1 → daily_preview: JSON मधील सर्व उपलब्ध दिवस दाखवा (date→मराठी, rain_mm, t_max_c, wind_kmh, wcode emoji). कधीही ७ दिवसांवर थांबवू नका, सर्व डेटा वापरा.
+  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
+           उदा. "पुढील १५ दिवसांत X मिमी पाऊस अपेक्षित आहे. पीक ताण [LOW/MEDIUM/HIGH] आहे."
+           किंवा "उद्या [date] रोजी [rain_mm] मिमी पाऊस येणार आहे, कमाल तापमान [t_max_c]°C."
+  Step 1 → daily_preview: JSON मधील सर्व उपलब्ध दिवस दाखवा (७ वर कधीही थांबू नका — शेतकऱ्याने १५ दिवस मागितले असतील तर १५ च द्या)
   Step 2 → net_water_balance_7d → सिंचन सल्ला (threshold प्रमाणे)
   Step 3 → growth_stage + GDD असेल → पीक अवस्था सल्ला
   Step 4 → best_spray_window_by_day: फक्त आज + उद्याचे windows (संक्षिप्त, नियम १ नुसार)
@@ -368,7 +374,9 @@ GENERAL_WEATHER (default):
   Step 7 → horizon_2 + horizon_3 + enso: harvest_date दिल्यास फक्त
 
 HARVEST_FOCUSED / LONG_TERM:
-  Step 1 → horizon_3 monthly_outlook: प्रत्येक महिना rainfall_pct_of_normal सहित
+  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
+           उदा. "काढणीपर्यंत [N] दिवस उरले आहेत. [month] मध्ये [X]% सामान्य पाऊस अपेक्षित."
+  Step 1 → horizon_3 monthly_outlook
   Step 2 → enso_iod_state: combined effect सांगा
   Step 3 → horizon_2 weekly_outlook
   Step 4 → season_to_date surplus/deficit
