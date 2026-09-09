@@ -37,7 +37,7 @@ import random
 from typing import Any
 from datetime import datetime
 import zoneinfo
-
+import asyncio
 from google import genai
 from google.genai import types
 
@@ -92,41 +92,54 @@ def _error_response(reason: str) -> str:
     )
 
 
-# ─── Core async Gemini call ───────────────────────────────────────────────────
 
 async def _call_gemini(user_prompt: str) -> str:
-    try:
-        client = _get_client()
-        response = await client.aio.models.generate_content(
-            model=MODEL,
-            contents=user_prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=_SYSTEM_PROMPT,
-                temperature=0.25,
-                max_output_tokens=4096,
-            ),
-        )
-        reply = response.text.strip()
-        
-        # 🚀 META API 4096 CHAR LIMIT FAILSAFE
-        if len(reply) > 4000:
-            logger.warning(f"[Formatter] Truncating long response: {len(reply)} chars")
-            # Find the last clean paragraph break before 3800 characters
-            cut_index = reply.rfind('\n\n', 0, 3800)
-            if cut_index == -1:
-                cut_index = 3800  # Hard cut if no paragraph break is found
-            
-            # Slice cleanly and add a polite warning
-            reply = reply[:cut_index] + "\n\n⚠️ *(संदेश खूप मोठा असल्याने काही पर्याय वगळले आहेत. अधिक माहितीसाठी कृषी सेवा केंद्रात संपर्क करा.)*"
-            
-        return reply
+    max_retries = 3
+    base_delay = 1.5
 
-    except ValueError as e:
-        logger.error(f"[Formatter] Config error: {e}")
-        return _error_response("तांत्रिक अडचण: API key उपलब्ध नाही.")
-    except Exception as e:
-        logger.error(f"[Formatter] Gemini call failed: {e}")
-        return _error_response("माहिती तयार करताना अडचण आली.")
+    for attempt in range(max_retries):
+        try:
+            client = _get_client()
+            response = await client.aio.models.generate_content(
+                model=MODEL,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=_SYSTEM_PROMPT,
+                    temperature=0.25,
+                    max_output_tokens=4096,
+                ),
+            )
+            reply = response.text.strip()
+            
+            # 🚀 META API 4096 CHAR LIMIT FAILSAFE
+            if len(reply) > 4000:
+                logger.warning(f"[Formatter] Truncating long response: {len(reply)} chars")
+                cut_index = reply.rfind('\n\n', 0, 3800)
+                if cut_index == -1:
+                    cut_index = 3800 
+                
+                reply = reply[:cut_index] + "\n\n⚠️ *(संदेश खूप मोठा असल्याने काही पर्याय वगळले आहेत. अधिक माहितीसाठी कृषी सेवा केंद्रात संपर्क करा.)*"
+                
+            return reply
+
+        except ValueError as e:
+            logger.error(f"[Formatter] Config error: {e}")
+            return _error_response("तांत्रिक अडचण: API key उपलब्ध नाही.")
+            
+        except Exception as e:
+            err_str = str(e).lower()
+            # Catch 503, 500, and 429 quota errors
+            if "503" in err_str or "unavailable" in err_str or "500" in err_str or "429" in err_str or "quota" in err_str:
+                if attempt < max_retries - 1:
+                    # Exponential backoff with random jitter to prevent thundering herd
+                    sleep_time = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(f"[Formatter] Gemini API Overload ({err_str[:40]}). Retrying in {sleep_time:.1f}s (Attempt {attempt+1}/{max_retries})...")
+                    await asyncio.sleep(sleep_time)
+                    continue # Loop will trigger the next attempt
+            
+            # Fallthrough if out of retries or a different fatal error occurred
+            logger.error(f"[Formatter] Gemini call failed on attempt {attempt+1}: {e}")
+            return _error_response("माहिती तयार करताना अडचण आली. सर्व्हरवर ताण आहे, कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.")
 
 
 # ─── WEATHER formatter ───────────────────────────────────────────────────────

@@ -281,6 +281,31 @@ class WalletDB:
         finally:
             if conn and not conn.closed:
                 conn.close()
+    def grant_apology_credit(self, phone: str, credits_to_add: int, session_id: str, reason: str = "DELIVERY_ERROR") -> bool:
+        """
+        STRATEGY A: Instant Fulfillment Guarantee.
+        Grants apology credits safely using x402_tx_id as a strict UNIQUE idempotency key 
+        to prevent double-refunds on Razorpay webhook retries.
+        """
+        subject_type, subject_id = self.whatsapp_subject(phone)
+        
+        # This string acts as an unbreakable lock in the DB.
+        # If Razorpay fires 5 times, 4 will bounce off the UNIQUE constraint.
+        idempotency_key = f"refund_{session_id}_{reason}"
+        
+        result = self.grant_topup(
+            subject_type=subject_type,
+            subject_id=subject_id,
+            package_id=f"APOLOGY_{reason}",
+            credits=credits_to_add,
+            payment_source="WHATSAPP_UPI",  # Complies with DB CHECK constraint
+            session_id=session_id,
+            x402_tx_id=idempotency_key,     # The Idempotency Lock
+            x402_settlement_status="COMPLETED"
+        )
+        
+        # Return True ONLY if it was successfully added just now (not a duplicate)
+        return result.get("success", False) and not result.get("duplicate", False)
 
     def grant_credits_and_log(
         self, phone: str, package_id: str, credits_to_add: int,

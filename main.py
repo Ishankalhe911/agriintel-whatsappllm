@@ -997,8 +997,8 @@ async def _send_payment(phone: str, session_id: str, lang: str) -> None:
 async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
     """
     Delivers advisory directly for farmers with credit balance.
-    No Razorpay involved — deduct 1 credit on successful delivery.
-    Called when orchestrator returns used_credits=True.
+    No Razorpay involved. Handles graceful rollbacks (Strategy A)
+    if external APIs fail after a credit was deducted.
     """
     from delivery import deliver
     from marathi_formatter import format_response_for_whatsapp
@@ -1031,31 +1031,43 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         store.update_session_data(session_id, payment_mode="credits")
         return
 
-    logger.info(
-        f"[Main] 💳 Credit delivery | session={session_id} | service={service_type}"
-    )
+    logger.info(f"[Main] 💳 Credit delivery | session={session_id} | service={service_type}")
 
+    # ── Call delivery (x402 → endpoint) ───────────────────────────────────
     try:
         result = await deliver(session)
     except Exception as e:
         logger.error(f"[Main] Credit delivery deliver() failed: {e}")
-        await send_text(phone, "⚠️ माहिती मिळवताना अडचण. पुन्हा प्रयत्न करा. 🙏")
-        return
+        result = {"error": True, "error_type": "DELIVERY_CRASH"}
 
-    if result.get("error"):
+    # ── 🚨 STRATEGY A: Credit Rollback on Endpoint Failure ────────────────
+    if result.get("error") is True or result.get("status") in ("no_match", "crop_not_found"):
         error_type = result.get("error_type", "UNKNOWN")
-        logger.error(f"[Main] Credit delivery error: {error_type}")
+        logger.error(f"[Main] Credit delivery error: {error_type}. Executing Rollback.")
+        
+        session_data = store.get_session(session_id) or {}
+        was_deducted = session_data.get("credit_deducted", False)
+        
+        # Only refund if orchestrator already deducted it!
+        if was_deducted:
+            wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="CREDIT_ROLLBACK")
+            refund_msg = "तुमचा १ क्रेडिट परत खात्यात जमा केला गेला आहे —"
+        else:
+            refund_msg = "क्रेडिट वापरला गेला नाही —"
+            
         await send_text(
             phone,
-            "⚠️ माहिती उपलब्ध नाही. क्रेडिट वापरला नाही — पुन्हा प्रयत्न करा. 🙏"
+            f"⚠️ माहिती उपलब्ध नाही. {refund_msg} कृपया थोड्या वेळाने पुन्हा प्रयत्न करा. 🙏"
             if lang == "mr" else
-            "⚠️ Data unavailable. Credit not used — please try again. 🙏"
+            "⚠️ Data unavailable. Your credit has been refunded. Please try again. 🙏"
         )
-        # Don't deduct — delivery failed
+        # Clear session since flow is aborted
+        store.clear_session(session_id)
         return
 
-           # For fertilizer: deduct here after successful delivery
-    # For mandi/weather: already deducted in orchestrator at location-collection step
+    # ── Deduct credit if not already deducted ──────────────────────────────
+    # For fertilizer: deduct here after successful delivery.
+    # For mandi/weather: already deducted in orchestrator at location-collection step.
     session_data = store.get_session(session_id) or {}
     if not session_data.get("credit_deducted", False):
         deducted = wallet_db.deduct_credit(phone)
@@ -1076,13 +1088,26 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         )
     except Exception as e:
         logger.error(f"[Main] Credit delivery formatter failed: {e}")
+        formatted = "⚠️ *माहिती उपलब्ध नाही*"
+
+    # ── 🚨 STRATEGY A: Credit Rollback on LLM Crash ───────────────────────
+    if "⚠️ *माहिती उपलब्ध नाही*" in formatted or "तांत्रिक अडचण" in formatted:
+        logger.warning(f"[Main] Formatter failed for credit session {session_id}. Executing Rollback.")
+        
+        # By this point, the credit has 100% been deducted (checked/enforced above). Roll it back.
+        wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="CREDIT_LLM_ROLLBACK")
+        
         await send_text(
             phone,
-            "✅ *माहिती मिळाली* — पण फॉर्मेट करताना अडचण आली.\n"
-            "कृपया पुन्हा प्रयत्न करा. 🙏"
+            "✅ माहिती मिळाली, पण फॉर्मेट करताना अडचण आली.\n"
+            "🎁 *तुमचा १ क्रेडिट परत केला आहे.* कृपया थोड्या वेळाने पुन्हा प्रयत्न करा. 🙏"
+            if lang == "mr" else
+            "⚠️ Formatting failed. Your 1 credit has been refunded. Please try again. 🙏"
         )
+        store.clear_session(session_id)
         return
 
+    # ── Delivery Success ───────────────────────────────────────────────────
     await send_text(phone, formatted)
 
     # Check remaining balance and always inform the farmer
@@ -1105,10 +1130,7 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
 
     store.update_session_data(session_id, payment_status="paid", result_ready=True)
     logger.info(f"[Main] ✅ Credit session marked paid | session={session_id}")
-    logger.info(
-        f"[Main] ✅ Credit delivery done | session={session_id} | "
-        f"remaining_credits={remaining}"
-    )
+    logger.info(f"[Main] ✅ Credit delivery done | session={session_id} | remaining={remaining}")
 
 
 

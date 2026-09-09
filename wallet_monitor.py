@@ -285,7 +285,8 @@ async def _handle_paid(
         f"[WalletMonitor] ✅ Payment confirmed | session={session_id} | "
         f"service={service_type} | ₹{amount_paid / 100:.2f}"
     )
-        # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
+
+    # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
     session_type = session.get("session_type") or event.get("session_type", "query")
     if session_type == "topup":
         await _handle_topup_paid(
@@ -296,8 +297,10 @@ async def _handle_paid(
             event=event,
             store=store,
             consent_logger=consent_logger,
+            wallet_db=wallet_db,
         )
         return
+
     # ── below = existing query flow, untouched ────────────────────────────
     # ── DPDPA consent log ─────────────────────────────────────────────────
     if consent_logger:
@@ -322,57 +325,47 @@ async def _handle_paid(
         result = await deliver(session)
     except Exception as e:
         logger.error(f"[WalletMonitor] deliver() raised exception: {e}")
-        await send_text(phone, _msg("delivery_error", lang))
-        return
+        result = {"error": True, "error_type": "DELIVERY_CRASH"}
 
-    # ── Handle delivery errors ─────────────────────────────────────────────
-    if result.get("error") is True:
+    # ── 🚨 STRATEGY A: Handle Delivery Errors Instantly ────────────────────
+    if result.get("error") is True or result.get("status") in ("no_match", "crop_not_found"):
         error_type = result.get("error_type", "UNKNOWN")
         logger.error(
             f"[WalletMonitor] Delivery error for session {session_id}: "
-            f"{error_type} — {result.get('error_reason', '')}"
+            f"{error_type} — {result.get('error_reason', '')}. Executing Strategy A."
         )
-
-        if error_type == "DATA_UNAVAILABLE":
-            # Endpoint 503 — schedule a retry in 5 minutes
-            # Reset payment_status back to "paid" so retry logic can re-trigger
-            # (main.py retry scheduler checks payment_status="paid" + result_ready=False)
-            store.update_session_data(session_id, result_ready=False, retry_scheduled=True)
-            asyncio.create_task(
-                _retry_delivery_after_delay(
-                    session_id=session_id,
-                    phone=phone,
-                    lang=lang,
-                    store=store,
-                    delay_seconds=300,
-                    wallet_db=wallet_db,     
-                    event=event,             
-                    amount_paid=amount_paid,   
-                )
-            )
-        elif error_type == "SESSION_INCOMPLETE":
-            # This means orchestrator missed a required field — ask farmer to re-send
-            await send_text(
-                phone,
-                (
+        
+        # Issue EXACTLY 1 apology credit for single-query failure
+        if wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="API_ERROR"):
+            if error_type == "SESSION_INCOMPLETE":
+                apology_msg = (
                     "⚠️ *माहिती अपूर्ण*\n\n"
-                    "कृपया तुमचा प्रश्न पुन्हा पाठवा — "
-                    "यावेळी पीक आणि ठिकाण दोन्ही नमूद करा. 🌾"
+                    "तुमचे पेमेंट सुरक्षित आहे! आम्ही तुमच्या खात्यात *१ फ्री क्रेडिट* जमा केले आहे. 🎁\n"
+                    "कृपया तुमचा प्रश्न पुन्हा पाठवा — यावेळी पीक आणि ठिकाण दोन्ही नमूद करा. 🌾"
                     if lang == "mr" else
-                    _msg("delivery_error", lang)
-                ),
-            )
-        else:
-            await send_text(phone, _msg("delivery_error", lang))
-        return   # ← ADD THIS
+                    "⚠️ *Incomplete Info*\nYour payment is safe! We deposited *1 Free Credit*. Please send your question again with crop and location. 🌾"
+                )
+            else:
+                apology_msg = (
+                    "⚠️ *माहिती मिळवण्यात अडचण*\n\n"
+                    "तुमचे पेमेंट झाले आहे, पण सध्या सर्व्हरवरून डेटा उपलब्ध नाही.\n\n"
+                    "🎁 *आम्ही तुमचे पैसे वाया जाऊ देणार नाही!*\n"
+                    "तुमच्या मोबाईल नंबरवर *१ फ्री क्रेडिट* जमा केले आहे. "
+                    "थोड्या वेळाने तुम्ही नवीन प्रश्न विचारून या क्रेडिटचा वापर करू शकता. 🙏"
+                    if lang == "mr" else
+                    "⚠️ *Data Unavailable*\nYour payment is safe! We have deposited *1 Free Credit* to your account. Please try asking again later. 🙏"
+                )
+            await send_text(phone, apology_msg)
+        
+        # Clear session since we fulfilled the guarantee via credit
+        store.clear_session(session_id)
+        return
 
     logger.info(f"[WalletMonitor] ✅ Query delivered for session {session_id}")
-  
 
     # ── Format and send to farmer ──────────────────────────────────────────
     try:
-        # DEBUG: log what the formatter actually receives — remove after confirming
-        # mandi hallucination bug is fixed
+        # DEBUG: log what the formatter actually receives
         logger.info(
             f"[WalletMonitor] Formatter input | service={service_type} | "
             f"result_keys={list(result.keys())} | "
@@ -388,19 +381,31 @@ async def _handle_paid(
         )
     except Exception as e:
         logger.error(f"[WalletMonitor] Formatter failed: {e}")
-        # Formatter crashed — send raw summary rather than silence
-        await send_text(
-            phone,
-            "✅ *माहिती मिळाली* — पण फॉर्मेट करताना अडचण आली.\n"
-            "कृपया तुमचा प्रश्न पुन्हा पाठवा. 🙏",
-        )
+        formatted = "⚠️ *माहिती उपलब्ध नाही*"
+
+    # ── 🚨 STRATEGY A: Handle LLM Formatter Crash ─────────────────────────
+    if "⚠️ *माहिती उपलब्ध नाही*" in formatted or "तांत्रिक अडचण" in formatted:
+        logger.warning(f"[WalletMonitor] Formatter failed for paid session {session_id}. Executing Strategy A.")
+        
+        if wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="LLM_ERROR"):
+            apology_msg = (
+                "✅ माहिती मिळाली, पण फॉर्मेट करताना अडचण आली.\n\n"
+                "🎁 *तुमचे पैसे वाया जाऊ नयेत म्हणून तुमच्या खात्यात १ फ्री क्रेडिट जमा केले आहे.* "
+                "कृपया थोड्या वेळाने पुन्हा प्रयत्न करा."
+                if lang == "mr" else
+                "⚠️ Formatting failed. We have deposited *1 Free Credit* so your money isn't wasted. Please try again later."
+            )
+            await send_text(phone, apology_msg)
+            
+        store.clear_session(session_id)
         return
 
     await send_text(phone, formatted)
 
     # ── Mark result delivered ──────────────────────────────────────────────
     store.update_session_data(session_id, result_ready=True, retry_scheduled=False)
-        # Topup nudge — farmer just got value, highest receptivity moment
+    
+    # Topup nudge — farmer just got value, highest receptivity moment
     _topup_nudge = {
         "mr": "\n\n💡 *वारंवार प्रश्न विचारता?*\n'topup' लिहा — ₹२०/₹३० पॅकमध्ये पेमेंट एकदाच करा.",
         "hi": "\n\n💡 *बार-बार सवाल पूछते हैं?*\n'topup' लिखें — ₹20/₹30 पैक में एक बार पेमेंट करें।",
@@ -408,6 +413,8 @@ async def _handle_paid(
     }
     await send_text(phone, _topup_nudge.get(lang, _topup_nudge["mr"]))
     logger.info(f"[WalletMonitor] ✅ Response delivered to {phone[-4:]} for session {session_id}")
+
+
 # ─── Top-Up Paid Handler ──────────────────────────────────────────────────────
 
 async def _handle_topup_paid(
@@ -418,11 +425,12 @@ async def _handle_topup_paid(
     event: dict,
     store: SessionStore,
     consent_logger=None,
+    wallet_db=None,
 ) -> None:
     """
     Handles a completed topup payment.
     Calls /credits-topup via x402 — credit write happens there, not here.
-    wallet_monitor never writes credits directly.
+    If remote fails, gracefully falls back to local DB to fulfill purchase.
     """
     from x402_client import call_credits_topup
 
@@ -476,34 +484,40 @@ async def _handle_topup_paid(
         if attempt < 3:
             await asyncio.sleep(5)
 
+    # ── 🚨 STRATEGY A: x402 Topup Server Down (Local Fallback) ────────────
     if not result or result.get("error"):
         logger.error(
-            f"[WalletMonitor] 🚨 All topup attempts failed for {session_id} | "
-            f"package={package_id} — farmer paid but credits not written"
+            f"[WalletMonitor] 🚨 All remote topup attempts failed for {session_id} | "
+            f"package={package_id} — Executing Local DB Fallback"
         )
-        await send_text(
-            phone,
-            (
-                "⚠️ *क्रेडिट जोडताना अडचण आली.*\n"
-                "तुमचे पेमेंट झाले आहे — 5 मिनिटांत पुन्हा प्रयत्न होईल.\n"
-                "समस्या कायम राहिल्यास 'topup' पाठवा. 🙏"
-                if lang == "mr" else
-                "⚠️ Credits not added yet — we'll retry in 5 min. Your payment is safe."
-            )
-        )
-        # Schedule one background retry
-        asyncio.create_task(
-            _retry_topup_after_delay(
-                session_id=session_id,
-                phone=phone,
-                package_id=package_id,
-                lang=lang,
-                store=store,
-                delay_seconds=300,
-            )
-        )
+        
+        # Strictly proportional logic based on package
+        credits_to_add = 5 if package_id == "PACK_20" else 10 if package_id == "PACK_30" else 0
+        
+        if credits_to_add > 0 and wallet_db and wallet_db.grant_apology_credit(phone, credits_to_add, session_id, reason="TOPUP_FALLBACK"):
+            new_balance = wallet_db.get_balance(phone)
+            confirm_msg = {
+                "mr": (
+                    f"✅ *{credits_to_add} क्रेडिट जोडले!*\n\n"
+                    f"💳 शिल्लक: *{new_balance} प्रश्न*\n\n"
+                    "आता तुमचा प्रश्न विचारा — थेट उत्तर मिळेल, पेमेंट नाही! 🌾"
+                ),
+                "hi": (
+                    f"✅ *{credits_to_add} क्रेडिट जोड़े गए!*\n\n"
+                    f"💳 बकाया: *{new_balance} सवाल*\n\n"
+                    "अब अपना सवाल पूछें — सीधे जवाब मिलेगा, पेमेंट नहीं! 🌾"
+                ),
+                "en": (
+                    f"✅ *{credits_to_add} credits added!*\n\n"
+                    f"💳 Balance: *{new_balance} queries*\n\n"
+                    "Ask your next question — no payment needed! 🌾"
+                ),
+            }
+            await send_text(phone, confirm_msg.get(lang, confirm_msg["mr"]))
+            store.update_session_data(session_id, result_ready=True, session_type="topup_complete")
         return
 
+    # ── Normal remote success ─────────────────────────────────────────────
     credits_granted = result.get("credits_granted", 0)
     new_balance = result.get("new_balance", 0)
 
