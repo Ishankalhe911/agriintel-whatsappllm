@@ -296,6 +296,24 @@ async def _handle_paid(
     )
         # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
     session_type = session.get("session_type") or event.get("session_type", "query")
+
+    # ── Instant payment confirmation — BEFORE any downstream processing.
+    # Farmer must know the payment worked right away, even if credit-granting
+    # or data delivery takes several seconds (retries) to 1-2 minutes (fertilizer).
+    if session_type == "topup":
+        _payment_ack_msg = {
+            "mr": "✅ *पेमेंट यशस्वी झाले!*\n💳 तुमचे क्रेडिट जोडले जात आहेत, जरा थांबा...",
+            "hi": "✅ *पेमेंट सफल हुआ!*\n💳 आपके क्रेडिट जोड़े जा रहे हैं, कृपया थोड़ा इंतज़ार करें...",
+            "en": "✅ *Payment successful!*\n💳 Adding your credits, please wait...",
+        }
+    else:
+        _payment_ack_msg = {
+            "mr": "✅ *पेमेंट यशस्वी झाले!*\n🌾 तुमची माहिती तयार होत आहे...",
+            "hi": "✅ *पेमेंट सफल हुआ!*\n🌾 आपकी जानकारी तैयार हो रही है...",
+            "en": "✅ *Payment successful!*\n🌾 Preparing your information...",
+        }
+    await send_text(phone, _payment_ack_msg.get(lang, _payment_ack_msg["mr"]))
+
     if session_type == "topup":
         await _handle_topup_paid(
             session=session,
