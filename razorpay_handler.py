@@ -230,7 +230,7 @@ async def create_topup_payment_link(
         "amount":       amount_paise,
         "currency":     "INR",
         "reference_id": session_id,
-        "description":  f"Farmyworth {pkg['label']} क्रेडिट पॅक",
+        "description":  f"AgriIntellect {pkg['label']} क्रेडिट पॅक",
         "expire_by":    expires_at,
         "customer": {
             "contact": clean_phone,

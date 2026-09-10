@@ -41,6 +41,15 @@ from whatsapp import send_text, send_payment_link
 
 logger = logging.getLogger(__name__)
 
+# ─── Fertilizer processing wait notice (LLM formatting takes ~1-2 min) ───────
+# NOTE: kept identical to main.py's _FERTILIZER_WAIT_MSG. Duplicated (not
+# imported) to avoid a circular import — main.py imports wallet_monitor.py,
+# not the other way around. If wording changes, update both places.
+_FERTILIZER_WAIT_MSG = {
+    "mr": "🧪 तुमचा *पीक संरक्षण* सल्ला तयार होत आहे — यासाठी साधारण १-२ मिनिटे लागतील. जरा वाट पाहा. 🙏",
+    "hi": "🧪 आपकी *फसल सुरक्षा* सलाह तैयार हो रही है — इसमें लगभग १-२ मिनट लगेंगे। थोड़ा इंतज़ार करें। 🙏",
+    "en": "🧪 Preparing your *crop protection* advice — this takes about 1-2 minutes. Please wait. 🙏",
+}
 
 # ─── Farmer-facing messages (three languages, Marathi default) ────────────────
 
@@ -133,9 +142,9 @@ _MESSAGES = {
 
     # ── Expiry resend header ───────────────────────────────────────────────
     "pay_header": {
-        "mr": "AgriIntel माहिती",
-        "hi": "AgriIntel जानकारी",
-        "en": "AgriIntel Advisory",
+        "mr": "AgriIntellect माहिती",
+        "hi": "AgriIntellect जानकारी",
+        "en": "AgriIntellect Advisory",
     },
         "topup_error": {
         "mr": "⚠️ *क्रेडिट जोडताना अडचण*\n\nतुमचे पेमेंट सुरक्षित आहे. 5 मिनिटांत पुन्हा प्रयत्न होईल. 🙏",
@@ -285,9 +294,26 @@ async def _handle_paid(
         f"[WalletMonitor] ✅ Payment confirmed | session={session_id} | "
         f"service={service_type} | ₹{amount_paid / 100:.2f}"
     )
-
-    # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
+        # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
     session_type = session.get("session_type") or event.get("session_type", "query")
+
+    # ── Instant payment confirmation — BEFORE any downstream processing.
+    # Farmer must know the payment worked right away, even if credit-granting
+    # or data delivery takes several seconds (retries) to 1-2 minutes (fertilizer).
+    if session_type == "topup":
+        _payment_ack_msg = {
+            "mr": "✅ *पेमेंट यशस्वी झाले!*\n💳 तुमचे क्रेडिट जोडले जात आहेत, जरा थांबा...",
+            "hi": "✅ *पेमेंट सफल हुआ!*\n💳 आपके क्रेडिट जोड़े जा रहे हैं, कृपया थोड़ा इंतज़ार करें...",
+            "en": "✅ *Payment successful!*\n💳 Adding your credits, please wait...",
+        }
+    else:
+        _payment_ack_msg = {
+            "mr": "✅ *पेमेंट यशस्वी झाले!*\n🌾 तुमची माहिती तयार होत आहे...",
+            "hi": "✅ *पेमेंट सफल हुआ!*\n🌾 आपकी जानकारी तैयार हो रही है...",
+            "en": "✅ *Payment successful!*\n🌾 Preparing your information...",
+        }
+    await send_text(phone, _payment_ack_msg.get(lang, _payment_ack_msg["mr"]))
+
     if session_type == "topup":
         await _handle_topup_paid(
             session=session,
@@ -297,10 +323,8 @@ async def _handle_paid(
             event=event,
             store=store,
             consent_logger=consent_logger,
-            wallet_db=wallet_db,
         )
         return
-
     # ── below = existing query flow, untouched ────────────────────────────
     # ── DPDPA consent log ─────────────────────────────────────────────────
     if consent_logger:
@@ -325,47 +349,60 @@ async def _handle_paid(
         result = await deliver(session)
     except Exception as e:
         logger.error(f"[WalletMonitor] deliver() raised exception: {e}")
-        result = {"error": True, "error_type": "DELIVERY_CRASH"}
+        await send_text(phone, _msg("delivery_error", lang))
+        return
 
-    # ── 🚨 STRATEGY A: Handle Delivery Errors Instantly ────────────────────
-    if result.get("error") is True or result.get("status") in ("no_match", "crop_not_found"):
+    # ── Handle delivery errors ─────────────────────────────────────────────
+    if result.get("error") is True:
         error_type = result.get("error_type", "UNKNOWN")
         logger.error(
             f"[WalletMonitor] Delivery error for session {session_id}: "
-            f"{error_type} — {result.get('error_reason', '')}. Executing Strategy A."
+            f"{error_type} — {result.get('error_reason', '')}"
         )
-        
-        # Issue EXACTLY 1 apology credit for single-query failure
-        if wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="API_ERROR"):
-            if error_type == "SESSION_INCOMPLETE":
-                apology_msg = (
+
+        if error_type == "DATA_UNAVAILABLE":
+            # Endpoint 503 — schedule a retry in 5 minutes
+            # Reset payment_status back to "paid" so retry logic can re-trigger
+            # (main.py retry scheduler checks payment_status="paid" + result_ready=False)
+            store.update_session_data(session_id, result_ready=False, retry_scheduled=True)
+            asyncio.create_task(
+                _retry_delivery_after_delay(
+                    session_id=session_id,
+                    phone=phone,
+                    lang=lang,
+                    store=store,
+                    delay_seconds=300,
+                    wallet_db=wallet_db,     
+                    event=event,             
+                    amount_paid=amount_paid,   
+                )
+            )
+        elif error_type == "SESSION_INCOMPLETE":
+            # This means orchestrator missed a required field — ask farmer to re-send
+            await send_text(
+                phone,
+                (
                     "⚠️ *माहिती अपूर्ण*\n\n"
-                    "तुमचे पेमेंट सुरक्षित आहे! आम्ही तुमच्या खात्यात *१ फ्री क्रेडिट* जमा केले आहे. 🎁\n"
-                    "कृपया तुमचा प्रश्न पुन्हा पाठवा — यावेळी पीक आणि ठिकाण दोन्ही नमूद करा. 🌾"
+                    "कृपया तुमचा प्रश्न पुन्हा पाठवा — "
+                    "यावेळी पीक आणि ठिकाण दोन्ही नमूद करा. 🌾"
                     if lang == "mr" else
-                    "⚠️ *Incomplete Info*\nYour payment is safe! We deposited *1 Free Credit*. Please send your question again with crop and location. 🌾"
-                )
-            else:
-                apology_msg = (
-                    "⚠️ *माहिती मिळवण्यात अडचण*\n\n"
-                    "तुमचे पेमेंट झाले आहे, पण सध्या सर्व्हरवरून डेटा उपलब्ध नाही.\n\n"
-                    "🎁 *आम्ही तुमचे पैसे वाया जाऊ देणार नाही!*\n"
-                    "तुमच्या मोबाईल नंबरवर *१ फ्री क्रेडिट* जमा केले आहे. "
-                    "थोड्या वेळाने तुम्ही नवीन प्रश्न विचारून या क्रेडिटचा वापर करू शकता. 🙏"
-                    if lang == "mr" else
-                    "⚠️ *Data Unavailable*\nYour payment is safe! We have deposited *1 Free Credit* to your account. Please try asking again later. 🙏"
-                )
-            await send_text(phone, apology_msg)
-        
-        # Clear session since we fulfilled the guarantee via credit
-        store.clear_session(session_id)
-        return
+                    _msg("delivery_error", lang)
+                ),
+            )
+        else:
+            await send_text(phone, _msg("delivery_error", lang))
+        return   # ← ADD THIS
 
     logger.info(f"[WalletMonitor] ✅ Query delivered for session {session_id}")
+  
 
     # ── Format and send to farmer ──────────────────────────────────────────
+    if service_type == "fertilizer":
+        await send_text(phone, _FERTILIZER_WAIT_MSG.get(lang, _FERTILIZER_WAIT_MSG["mr"]))
+
     try:
-        # DEBUG: log what the formatter actually receives
+        # DEBUG: log what the formatter actually receives — remove after confirming
+        # mandi hallucination bug is fixed
         logger.info(
             f"[WalletMonitor] Formatter input | service={service_type} | "
             f"result_keys={list(result.keys())} | "
@@ -381,31 +418,19 @@ async def _handle_paid(
         )
     except Exception as e:
         logger.error(f"[WalletMonitor] Formatter failed: {e}")
-        formatted = "⚠️ *माहिती उपलब्ध नाही*"
-
-    # ── 🚨 STRATEGY A: Handle LLM Formatter Crash ─────────────────────────
-    if "⚠️ *माहिती उपलब्ध नाही*" in formatted or "तांत्रिक अडचण" in formatted:
-        logger.warning(f"[WalletMonitor] Formatter failed for paid session {session_id}. Executing Strategy A.")
-        
-        if wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="LLM_ERROR"):
-            apology_msg = (
-                "✅ माहिती मिळाली, पण फॉर्मेट करताना अडचण आली.\n\n"
-                "🎁 *तुमचे पैसे वाया जाऊ नयेत म्हणून तुमच्या खात्यात १ फ्री क्रेडिट जमा केले आहे.* "
-                "कृपया थोड्या वेळाने पुन्हा प्रयत्न करा."
-                if lang == "mr" else
-                "⚠️ Formatting failed. We have deposited *1 Free Credit* so your money isn't wasted. Please try again later."
-            )
-            await send_text(phone, apology_msg)
-            
-        store.clear_session(session_id)
+        # Formatter crashed — send raw summary rather than silence
+        await send_text(
+            phone,
+            "✅ *माहिती मिळाली* — पण फॉर्मेट करताना अडचण आली.\n"
+            "कृपया तुमचा प्रश्न पुन्हा पाठवा. 🙏",
+        )
         return
 
     await send_text(phone, formatted)
 
     # ── Mark result delivered ──────────────────────────────────────────────
     store.update_session_data(session_id, result_ready=True, retry_scheduled=False)
-    
-    # Topup nudge — farmer just got value, highest receptivity moment
+        # Topup nudge — farmer just got value, highest receptivity moment
     _topup_nudge = {
         "mr": "\n\n💡 *वारंवार प्रश्न विचारता?*\n'topup' लिहा — ₹२०/₹३० पॅकमध्ये पेमेंट एकदाच करा.",
         "hi": "\n\n💡 *बार-बार सवाल पूछते हैं?*\n'topup' लिखें — ₹20/₹30 पैक में एक बार पेमेंट करें।",
@@ -413,8 +438,6 @@ async def _handle_paid(
     }
     await send_text(phone, _topup_nudge.get(lang, _topup_nudge["mr"]))
     logger.info(f"[WalletMonitor] ✅ Response delivered to {phone[-4:]} for session {session_id}")
-
-
 # ─── Top-Up Paid Handler ──────────────────────────────────────────────────────
 
 async def _handle_topup_paid(
@@ -425,12 +448,11 @@ async def _handle_topup_paid(
     event: dict,
     store: SessionStore,
     consent_logger=None,
-    wallet_db=None,
 ) -> None:
     """
     Handles a completed topup payment.
     Calls /credits-topup via x402 — credit write happens there, not here.
-    If remote fails, gracefully falls back to local DB to fulfill purchase.
+    wallet_monitor never writes credits directly.
     """
     from x402_client import call_credits_topup
 
@@ -484,40 +506,34 @@ async def _handle_topup_paid(
         if attempt < 3:
             await asyncio.sleep(5)
 
-    # ── 🚨 STRATEGY A: x402 Topup Server Down (Local Fallback) ────────────
     if not result or result.get("error"):
         logger.error(
-            f"[WalletMonitor] 🚨 All remote topup attempts failed for {session_id} | "
-            f"package={package_id} — Executing Local DB Fallback"
+            f"[WalletMonitor] 🚨 All topup attempts failed for {session_id} | "
+            f"package={package_id} — farmer paid but credits not written"
         )
-        
-        # Strictly proportional logic based on package
-        credits_to_add = 5 if package_id == "PACK_20" else 10 if package_id == "PACK_30" else 0
-        
-        if credits_to_add > 0 and wallet_db and wallet_db.grant_apology_credit(phone, credits_to_add, session_id, reason="TOPUP_FALLBACK"):
-            new_balance = wallet_db.get_balance(phone)
-            confirm_msg = {
-                "mr": (
-                    f"✅ *{credits_to_add} क्रेडिट जोडले!*\n\n"
-                    f"💳 शिल्लक: *{new_balance} प्रश्न*\n\n"
-                    "आता तुमचा प्रश्न विचारा — थेट उत्तर मिळेल, पेमेंट नाही! 🌾"
-                ),
-                "hi": (
-                    f"✅ *{credits_to_add} क्रेडिट जोड़े गए!*\n\n"
-                    f"💳 बकाया: *{new_balance} सवाल*\n\n"
-                    "अब अपना सवाल पूछें — सीधे जवाब मिलेगा, पेमेंट नहीं! 🌾"
-                ),
-                "en": (
-                    f"✅ *{credits_to_add} credits added!*\n\n"
-                    f"💳 Balance: *{new_balance} queries*\n\n"
-                    "Ask your next question — no payment needed! 🌾"
-                ),
-            }
-            await send_text(phone, confirm_msg.get(lang, confirm_msg["mr"]))
-            store.update_session_data(session_id, result_ready=True, session_type="topup_complete")
+        await send_text(
+            phone,
+            (
+                "⚠️ *क्रेडिट जोडताना अडचण आली.*\n"
+                "तुमचे पेमेंट झाले आहे — 5 मिनिटांत पुन्हा प्रयत्न होईल.\n"
+                "समस्या कायम राहिल्यास 'topup' पाठवा. 🙏"
+                if lang == "mr" else
+                "⚠️ Credits not added yet — we'll retry in 5 min. Your payment is safe."
+            )
+        )
+        # Schedule one background retry
+        asyncio.create_task(
+            _retry_topup_after_delay(
+                session_id=session_id,
+                phone=phone,
+                package_id=package_id,
+                lang=lang,
+                store=store,
+                delay_seconds=300,
+            )
+        )
         return
 
-    # ── Normal remote success ─────────────────────────────────────────────
     credits_granted = result.get("credits_granted", 0)
     new_balance = result.get("new_balance", 0)
 
@@ -788,6 +804,8 @@ async def _retry_delivery_after_delay(
 
     logger.info(f"[WalletMonitor] ✅ Retry query delivered for session {session_id}")
 
+    if service_type == "fertilizer":
+        await send_text(phone, _FERTILIZER_WAIT_MSG.get(lang, _FERTILIZER_WAIT_MSG["mr"]))
 
     try:
         formatted = await format_response_for_whatsapp(

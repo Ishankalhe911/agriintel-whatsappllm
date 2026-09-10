@@ -133,9 +133,9 @@ _PAYMENT_BUTTON = {
 }
 
 _PAYMENT_HEADER = {
-    "mr": "AgriIntel माहिती",
-    "hi": "AgriIntel जानकारी",
-    "en": "AgriIntel Advisory",
+    "mr": "AgriIntellect माहिती",
+    "hi": "AgriIntellect जानकारी",
+    "en": "AgriIntellect Advisory",
 }
 
 # ─── Unsupported message response ─────────────────────────────────────────────
@@ -144,6 +144,13 @@ _UNSUPPORTED_MSG = {
     "mr": "माफ करा, आम्ही फक्त मजकूर संदेश आणि स्थान स्वीकारतो.\nकृपया तुमचा प्रश्न मजकूरात पाठवा. 🌾",
     "hi": "माफ करें, हम सिर्फ text और location स्वीकार करते हैं.\nकृपया अपना सवाल text में भेजें। 🌾",
     "en": "Sorry, we only accept text messages and location.\nPlease send your question as text. 🌾",
+}
+
+# ─── Fertilizer processing wait notice (LLM formatting takes ~1-2 min) ───────
+_FERTILIZER_WAIT_MSG = {
+    "mr": "🧪 तुमचा *पीक संरक्षण* सल्ला तयार होत आहे — यासाठी साधारण १-२ मिनिटे लागतील. जरा वाट पाहा. 🙏",
+    "hi": "🧪 आपकी *फसल सुरक्षा* सलाह तैयार हो रही है — इसमें लगभग १-२ मिनट लगेंगे। थोड़ा इंतज़ार करें। 🙏",
+    "en": "🧪 Preparing your *crop protection* advice — this takes about 1-2 minutes. Please wait. 🙏",
 }
 
 # ─── Awaiting payment message (farmer sends text while payment pending) ───────
@@ -339,39 +346,26 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
         reply_id    = msg.get("reply_id") or ""
         reply_title = msg.get("reply_title") or ""
 
-                # ── Horizon button reply ──────────────────────────────────────────
+        # ── Horizon button reply ──────────────────────────────────────────
         if reply_id in ("horizon_15d", "horizon_1m", "horizon_2m") and session:
             session_id = session.get("session_id", "")
-
+            
             today = date.today()
             horizon_map = {
-                "horizon_15d": {"days": 15, "forecast_days": 16},
-                "horizon_1m":  {"days": 30, "forecast_days": 16},
-                "horizon_2m":  {"days": 60, "forecast_days": 16},
+                "horizon_15d": timedelta(days=15),
+                "horizon_1m":  timedelta(days=30),
+                "horizon_2m":  timedelta(days=60),
             }
-
-            selected = horizon_map[reply_id]
-
-            harvest_date = (
-                today + timedelta(days=selected["days"])
-            ).strftime("%Y-%m-%d")
-
-            forecast_days = selected["forecast_days"]
-
+            harvest_date = (today + horizon_map[reply_id]).strftime("%Y-%m-%d")
             success = store.update_session_data(
                 session_id,
-                harvest_date=harvest_date,
-                forecast_days=forecast_days,
-                horizon_asked=False,
+                harvest_date  = harvest_date,
+                horizon_asked = False,
             )
-
             logger.info(
-                f"[Main] Horizon resolved: {reply_id} → "
-                f"harvest_date={harvest_date}, forecast_days={forecast_days} "
-                f"for session {session_id} "
-                f"(save={'ok' if success else 'FAILED'})"
+                f"[Main] Horizon resolved: {reply_id} → harvest_date={harvest_date} "
+                f"for session {session_id} (save={'ok' if success else 'FAILED'})"
             )
-
             dpdpa_consent = (
                 "📍 *स्थान माहिती*: चांगल्या सेवेसाठी आम्हाला आपले स्थान आवश्यक आहे.\n"
                 "आपले स्थान फक्त या विनंतीसाठी वापरले जाईल."
@@ -379,13 +373,10 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
                 "📍 *Location*: We need your location for accurate results.\n"
                 "It will only be used for this request."
             )
-
             await send_text(phone, dpdpa_consent)
             await send_location_request(
-                to=phone,
-                body_text=_LOCATION_REQUEST_TEXT.get(
-                    lang, _LOCATION_REQUEST_TEXT["mr"]
-                ),
+                to        = phone,
+                body_text = _LOCATION_REQUEST_TEXT.get(lang, _LOCATION_REQUEST_TEXT["mr"]),
             )
             return
 
@@ -729,7 +720,7 @@ async def _handle_text_message(
                 ),
                 button_label="💳 UPI ने भरा",
                 url=link_result["short_url"],
-                header_text="Farmyworth क्रेडिट",
+                header_text="AgriIntellect क्रेडिट",
             )
         return
 
@@ -997,8 +988,8 @@ async def _send_payment(phone: str, session_id: str, lang: str) -> None:
 async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
     """
     Delivers advisory directly for farmers with credit balance.
-    No Razorpay involved. Handles graceful rollbacks (Strategy A)
-    if external APIs fail after a credit was deducted.
+    No Razorpay involved — deduct 1 credit on successful delivery.
+    Called when orchestrator returns used_credits=True.
     """
     from delivery import deliver
     from marathi_formatter import format_response_for_whatsapp
@@ -1031,43 +1022,31 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         store.update_session_data(session_id, payment_mode="credits")
         return
 
-    logger.info(f"[Main] 💳 Credit delivery | session={session_id} | service={service_type}")
+    logger.info(
+        f"[Main] 💳 Credit delivery | session={session_id} | service={service_type}"
+    )
 
-    # ── Call delivery (x402 → endpoint) ───────────────────────────────────
     try:
         result = await deliver(session)
     except Exception as e:
         logger.error(f"[Main] Credit delivery deliver() failed: {e}")
-        result = {"error": True, "error_type": "DELIVERY_CRASH"}
-
-    # ── 🚨 STRATEGY A: Credit Rollback on Endpoint Failure ────────────────
-    if result.get("error") is True or result.get("status") in ("no_match", "crop_not_found"):
-        error_type = result.get("error_type", "UNKNOWN")
-        logger.error(f"[Main] Credit delivery error: {error_type}. Executing Rollback.")
-        
-        session_data = store.get_session(session_id) or {}
-        was_deducted = session_data.get("credit_deducted", False)
-        
-        # Only refund if orchestrator already deducted it!
-        if was_deducted:
-            wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="CREDIT_ROLLBACK")
-            refund_msg = "तुमचा १ क्रेडिट परत खात्यात जमा केला गेला आहे —"
-        else:
-            refund_msg = "क्रेडिट वापरला गेला नाही —"
-            
-        await send_text(
-            phone,
-            f"⚠️ माहिती उपलब्ध नाही. {refund_msg} कृपया थोड्या वेळाने पुन्हा प्रयत्न करा. 🙏"
-            if lang == "mr" else
-            "⚠️ Data unavailable. Your credit has been refunded. Please try again. 🙏"
-        )
-        # Clear session since flow is aborted
-        store.clear_session(session_id)
+        await send_text(phone, "⚠️ माहिती मिळवताना अडचण. पुन्हा प्रयत्न करा. 🙏")
         return
 
-    # ── Deduct credit if not already deducted ──────────────────────────────
-    # For fertilizer: deduct here after successful delivery.
-    # For mandi/weather: already deducted in orchestrator at location-collection step.
+    if result.get("error"):
+        error_type = result.get("error_type", "UNKNOWN")
+        logger.error(f"[Main] Credit delivery error: {error_type}")
+        await send_text(
+            phone,
+            "⚠️ माहिती उपलब्ध नाही. क्रेडिट वापरला नाही — पुन्हा प्रयत्न करा. 🙏"
+            if lang == "mr" else
+            "⚠️ Data unavailable. Credit not used — please try again. 🙏"
+        )
+        # Don't deduct — delivery failed
+        return
+
+           # For fertilizer: deduct here after successful delivery
+    # For mandi/weather: already deducted in orchestrator at location-collection step
     session_data = store.get_session(session_id) or {}
     if not session_data.get("credit_deducted", False):
         deducted = wallet_db.deduct_credit(phone)
@@ -1080,6 +1059,9 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         logger.info(f"[Main] 💳 Credit already deducted at routing for {phone[-4:]}")
 
     # ── Format and send ────────────────────────────────────────────────────
+    if service_type == "fertilizer":
+        await send_text(phone, _FERTILIZER_WAIT_MSG.get(lang, _FERTILIZER_WAIT_MSG["mr"]))
+
     try:
         formatted = await format_response_for_whatsapp(
             service_type=service_type,
@@ -1088,52 +1070,31 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         )
     except Exception as e:
         logger.error(f"[Main] Credit delivery formatter failed: {e}")
-        formatted = "⚠️ *माहिती उपलब्ध नाही*"
-
-    # ── 🚨 STRATEGY A: Credit Rollback on LLM Crash ───────────────────────
-    if "⚠️ *माहिती उपलब्ध नाही*" in formatted or "तांत्रिक अडचण" in formatted:
-        logger.warning(f"[Main] Formatter failed for credit session {session_id}. Executing Rollback.")
-        
-        # By this point, the credit has 100% been deducted (checked/enforced above). Roll it back.
-        wallet_db.grant_apology_credit(phone, credits_to_add=1, session_id=session_id, reason="CREDIT_LLM_ROLLBACK")
-        
         await send_text(
             phone,
-            "✅ माहिती मिळाली, पण फॉर्मेट करताना अडचण आली.\n"
-            "🎁 *तुमचा १ क्रेडिट परत केला आहे.* कृपया थोड्या वेळाने पुन्हा प्रयत्न करा. 🙏"
-            if lang == "mr" else
-            "⚠️ Formatting failed. Your 1 credit has been refunded. Please try again. 🙏"
+            "✅ *माहिती मिळाली* — पण फॉर्मेट करताना अडचण आली.\n"
+            "कृपया पुन्हा प्रयत्न करा. 🙏"
         )
-        store.clear_session(session_id)
         return
 
-    # ── Delivery Success ───────────────────────────────────────────────────
     await send_text(phone, formatted)
 
-    # Check remaining balance and always inform the farmer
+    # Check remaining balance and warn if low/zero
     remaining = wallet_db.get_balance(phone)
-
     if remaining == 0:
-        credit_status_msg = (
+        await send_text(
+            phone,
             "\n\n💳 *तुमचे सर्व क्रेडिट संपले.*\n'topup' लिहा आणि पुन्हा पॅक घ्या. 🌾"
             if lang == "mr" else
             "\n\n💳 *All credits used.*\nReply 'topup' to recharge. 🌾"
         )
-    else:
-        credit_status_msg = {
-            "mr": f"\n\n💳 *1 क्रेडिट वापरला.* शिल्लक क्रेडिट: *{remaining}*",
-            "hi": f"\n\n💳 *1 क्रेडिट उपयोग हुआ।* शेष क्रेडिट: *{remaining}*",
-            "en": f"\n\n💳 *1 credit used.* Remaining credits: *{remaining}*",
-        }.get(lang, f"\n\n💳 1 credit used. Remaining: {remaining}")
-
-    await send_text(phone, credit_status_msg)
 
     store.update_session_data(session_id, payment_status="paid", result_ready=True)
     logger.info(f"[Main] ✅ Credit session marked paid | session={session_id}")
-    logger.info(f"[Main] ✅ Credit delivery done | session={session_id} | remaining={remaining}")
-
-
-
+    logger.info(
+        f"[Main] ✅ Credit delivery done | session={session_id} | "
+        f"remaining_credits={remaining}"
+    )
 # ─── DPDPA data deletion handler ──────────────────────────────────────────────
 
 async def _handle_data_deletion(

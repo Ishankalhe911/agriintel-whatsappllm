@@ -37,7 +37,7 @@ import random
 from typing import Any
 from datetime import datetime
 import zoneinfo
-import asyncio
+
 from google import genai
 from google.genai import types
 
@@ -77,7 +77,6 @@ _SYSTEM_PROMPT = """WHATSAPP FORMATTING RULES — follow exactly, no exceptions:
 7. Emojis: 🌾 🌧️ 🐛 💰 🚜 💡 🧪 ⚠️ ✅ ☀️ 🌱 (use contextually)
 8. Mobile paragraphs — short, each point on its own line.
 9. End every response with one encouraging Marathi sign-off line.
-10. ⚠️ COMPLETENESS RULE: JSON मध्ये जेवढे दिवस आहेत तेवढे सर्व दाखवा — कधीही मध्येच थांबू नका. शेतकऱ्याने पैसे दिले आहेत — अपूर्ण उत्तर देणे म्हणजे फसवणूक आहे. जर JSON मध्ये १५ दिवस असतील तर १५ दिवसच द्या, ७ नाही.
 
 तुम्ही एक अनुभवी महाराष्ट्रीयन कृषी तज्ञ आहात. शेतकऱ्याने पैसे देऊन हा सल्ला
 विकत घेतला आहे — त्यामुळे JSON मधील प्रत्येक उपयुक्त आकडा वापरून पूर्ण उत्तर द्या."""
@@ -92,54 +91,41 @@ def _error_response(reason: str) -> str:
     )
 
 
+# ─── Core async Gemini call ───────────────────────────────────────────────────
 
 async def _call_gemini(user_prompt: str) -> str:
-    max_retries = 3
-    base_delay = 1.5
+    try:
+        client = _get_client()
+        response = await client.aio.models.generate_content(
+            model=MODEL,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=_SYSTEM_PROMPT,
+                temperature=0.25,
+                max_output_tokens=3000,
+            ),
+        )
+        reply = response.text.strip()
+        
+        # 🚀 META API 4096 CHAR LIMIT FAILSAFE
+        if len(reply) > 4000:
+            logger.warning(f"[Formatter] Truncating long response: {len(reply)} chars")
+            # Find the last clean paragraph break before 3800 characters
+            cut_index = reply.rfind('\n\n', 0, 3800)
+            if cut_index == -1:
+                cut_index = 3800  # Hard cut if no paragraph break is found
+            
+            # Slice cleanly and add a polite warning
+            reply = reply[:cut_index] + "\n\n⚠️ *(संदेश खूप मोठा असल्याने काही पर्याय वगळले आहेत. अधिक माहितीसाठी कृषी सेवा केंद्रात संपर्क करा.)*"
+            
+        return reply
 
-    for attempt in range(max_retries):
-        try:
-            client = _get_client()
-            response = await client.aio.models.generate_content(
-                model=MODEL,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=_SYSTEM_PROMPT,
-                    temperature=0.25,
-                    max_output_tokens=4096,
-                ),
-            )
-            reply = response.text.strip()
-            
-            # 🚀 META API 4096 CHAR LIMIT FAILSAFE
-            if len(reply) > 4000:
-                logger.warning(f"[Formatter] Truncating long response: {len(reply)} chars")
-                cut_index = reply.rfind('\n\n', 0, 3800)
-                if cut_index == -1:
-                    cut_index = 3800 
-                
-                reply = reply[:cut_index] + "\n\n⚠️ *(संदेश खूप मोठा असल्याने काही पर्याय वगळले आहेत. अधिक माहितीसाठी कृषी सेवा केंद्रात संपर्क करा.)*"
-                
-            return reply
-
-        except ValueError as e:
-            logger.error(f"[Formatter] Config error: {e}")
-            return _error_response("तांत्रिक अडचण: API key उपलब्ध नाही.")
-            
-        except Exception as e:
-            err_str = str(e).lower()
-            # Catch 503, 500, and 429 quota errors
-            if "503" in err_str or "unavailable" in err_str or "500" in err_str or "429" in err_str or "quota" in err_str:
-                if attempt < max_retries - 1:
-                    # Exponential backoff with random jitter to prevent thundering herd
-                    sleep_time = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-                    logger.warning(f"[Formatter] Gemini API Overload ({err_str[:40]}). Retrying in {sleep_time:.1f}s (Attempt {attempt+1}/{max_retries})...")
-                    await asyncio.sleep(sleep_time)
-                    continue # Loop will trigger the next attempt
-            
-            # Fallthrough if out of retries or a different fatal error occurred
-            logger.error(f"[Formatter] Gemini call failed on attempt {attempt+1}: {e}")
-            return _error_response("माहिती तयार करताना अडचण आली. सर्व्हरवर ताण आहे, कृपया थोड्या वेळाने पुन्हा प्रयत्न करा.")
+    except ValueError as e:
+        logger.error(f"[Formatter] Config error: {e}")
+        return _error_response("तांत्रिक अडचण: API key उपलब्ध नाही.")
+    except Exception as e:
+        logger.error(f"[Formatter] Gemini call failed: {e}")
+        return _error_response("माहिती तयार करताना अडचण आली.")
 
 
 # ─── WEATHER formatter ───────────────────────────────────────────────────────
@@ -364,8 +350,6 @@ SPRAY_FOCUSED (शेतकऱ्याने फवारणीबद्दल 
   बाकी sections (horizon_2, horizon_3, enso) → skip करा जोपर्यंत harvest_date नसेल
 
 RAIN_FOCUSED (पावसाबद्दल विचारले):
-  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
-           उदा. "उद्या पाऊस येणार आहे — X मिमी अपेक्षित." किंवा "पुढील ३ दिवस कोरडे राहतील."
   Step 1 → next_rain_date सांगा (मराठी date)
   Step 2 → daily_preview: सर्व उपलब्ध दिवस, rain_mm + wcode emoji + t_max_c
   Step 3 → next_dry_spell असेल → "या काळात फवारणी/काढणी योग्य संधी"
@@ -375,10 +359,7 @@ RAIN_FOCUSED (पावसाबद्दल विचारले):
   Spray windows → skip
 
 GENERAL_WEATHER (default):
-  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
-           उदा. "पुढील १५ दिवसांत X मिमी पाऊस अपेक्षित आहे. पीक ताण [LOW/MEDIUM/HIGH] आहे."
-           किंवा "उद्या [date] रोजी [rain_mm] मिमी पाऊस येणार आहे, कमाल तापमान [t_max_c]°C."
-  Step 1 → daily_preview: JSON मधील सर्व उपलब्ध दिवस दाखवा (७ वर कधीही थांबू नका — शेतकऱ्याने १५ दिवस मागितले असतील तर १५ च द्या)
+  Step 1 → daily_preview: JSON मधील सर्व उपलब्ध दिवस दाखवा (date→मराठी, rain_mm, t_max_c, wind_kmh, wcode emoji). कधीही ७ दिवसांवर थांबवू नका, सर्व डेटा वापरा.
   Step 2 → net_water_balance_7d → सिंचन सल्ला (threshold प्रमाणे)
   Step 3 → growth_stage + GDD असेल → पीक अवस्था सल्ला
   Step 4 → best_spray_window_by_day: फक्त आज + उद्याचे windows (संक्षिप्त, नियम १ नुसार)
@@ -387,9 +368,7 @@ GENERAL_WEATHER (default):
   Step 7 → horizon_2 + horizon_3 + enso: harvest_date दिल्यास फक्त
 
 HARVEST_FOCUSED / LONG_TERM:
-  Step 0 → शेतकऱ्याच्या प्रश्नाचे थेट उत्तर १-२ ओळींत सर्वात आधी द्या.
-           उदा. "काढणीपर्यंत [N] दिवस उरले आहेत. [month] मध्ये [X]% सामान्य पाऊस अपेक्षित."
-  Step 1 → horizon_3 monthly_outlook
+  Step 1 → horizon_3 monthly_outlook: प्रत्येक महिना rainfall_pct_of_normal सहित
   Step 2 → enso_iod_state: combined effect सांगा
   Step 3 → horizon_2 weekly_outlook
   Step 4 → season_to_date surplus/deficit
@@ -842,36 +821,48 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 नियम ३ — Multiple recommendations: प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या. स्वतः "हा best आहे" म्हणू नका.
 नियम ४ — is_combination_product = true: "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
 नियम ५ — Bifurcation (वर्गीकरण): JSON मध्ये ज्या categories present आहेत, त्यांचे स्वतंत्र headers द्या (खालील साच्यात दिल्याप्रमाणे).
+नियम ६ — संवादात्मक सुरुवात (Conversational Opener): ✅ header च्या आधी १ छोटी ओळ लिहा — एखादा अनुभवी शेतकरी मित्र किंवा कृषी सेवा केंद्रावरचा माणूस जसा सरळ बोलेल तशी. रिपोर्ट/फॉर्म सारखी भाषा नको.
+  उदा. is_seed_treatment_query: "[crop_display] पेरायच्या आधी बियाण्याला हे लावा —"
+  उदा. is_pgr_query: "ठीक आहे, [crop_display] साठी वाढीचं औषध हवंय — हे वापरून पहा —"
+  उदा. mapped_from_symptom: "तुम्ही सांगितलेल्या लक्षणांवरून हे लक्षात येतंय —"
+  उदा. इतर: "तुमच्या [crop_display] वर [मुख्य समस्या] दिसतंय — यावर हे करा —"
+  ही ओळ छोटी आणि नैसर्गिक ठेवा, प्रत्येक वेळी शब्दशः तीच ओळ वापरू नका.
 
 ━━━ OUTPUT FORMAT — SEED TREATMENT (is_seed_treatment_query = true असेल तेव्हा हाच वापरा) ━━━
 
+[संवादात्मक सुरुवात — नियम ६ नुसार १ ओळ, उदा. "[crop_display] पेरायच्या आधी बियाण्याला हे लावा —"]
+
 ✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱
 
-🌱 *पेरणीपूर्वी बियाण्यास लावण्यासाठी:*
+🌱 पेरणीपूर्वी बियाण्यास लावण्यासाठी:
 
 [प्रत्येक recommendations.seed_treatment[] entry साठी — 2+ असतील तर *पर्याय १*, *पर्याय २*:]
 🧪 *[पर्याय १ / पर्याय २ ...]:*
-- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
-[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
-[dosage.application_method:] - *वापर पद्धत:* [मराठीत — उदा. बियाण्यास चोळून लावा]
+- घटक: [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - बाजारातील नावे: [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - वापर पद्धत: [मराठीत — उदा. बियाण्यास चोळून लावा]
 - *डोस:* [formulation_dose.value] [formulation_dose.unit मराठीत] प्रति किलो बियाणासाठी
-[dosage.water_dilution.value:] - *पाणी:* [dosage.water_dilution.value] [dosage.water_dilution.unit मराठीत] मध्ये मिसळा
+[dosage.water_dilution.value:] - पाणी: [dosage.water_dilution.value] [dosage.water_dilution.unit मराठीत] मध्ये मिसळा
 
-⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
-हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
+  - "बीजप्रक्रिया केल्यावर बियाणे सावलीत सुकवा आणि लगेच पेरणी करा — हातमोजे घालूनच औषध हाताळा."
+  - "औषध लावल्यानंतर बियाणे सावलीतच सुकू द्या, उन्हात नको — आणि हात मोजे वापरायला विसरू नका."
+  - "बियाण्याला औषध लावताना हातमोजे घाला, आणि सुकल्यावर लगेच पेरणी करा."
 
 ━━━ OUTPUT FORMAT — NORMAL PEST/PGR (is_seed_treatment_query = false असेल तेव्हा हाच वापरा) ━━━
+
+[संवादात्मक सुरुवात — नियम ६ नुसार १ ओळ, प्रश्नाशी सुसंगत]
 
 [HEADER LOGIC नुसार:]
 ✅ *[crop_display] [योग्य title]* [emoji]
 
-🐛 *आढळलेली समस्या:* [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
+तुम्ही सांगितलेली/दिसणारी समस्या: [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
 
 [mapped_from_symptom = true असेल:]
-🔍 *(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)*
+🔍 (हे लक्षणांवरून ओळखलं आहे — प्रत्यक्ष पीक पाहून एकदा खात्री करून घ्या)
 
 [summary.has_bio_options = true असेल:]
-🌿 *IPM सल्ला:* जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय.
+🌿 *IPM सल्ला:* आधी जैविक उपाय वापरून पहा — रासायनिक उपाय शेवटचा पर्याय ठेवा.
 
 [overlap_best_matches[] रिकामे नसेल:]
 🎯 *सर्व समस्यांसाठी उपयुक्त (All-in-One):*
@@ -899,18 +890,21 @@ recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display]
 🌱 *वाढ नियंत्रक / टॉनिक (PGR):*
 [त्यातील पर्याय १, पर्याय २...]
 
-🧪 *[पर्याय १ / पर्याय २ ...] साचा:*
-- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
-[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
-[dosage.application_method:] - *वापर पद्धत:* [मराठीत]
-- *डोस:* [formulation_dose_per_acre.value किंवा formulation_dose.value] [dosage मधून unit चे मराठी भाषांतर: kilo/gram/ml/Litre] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump.value] [formulation_dose_per_15L_pump.unit मराठीत])*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
-[water_dilution_per_acre.value किंवा water_dilution.value:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
-[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
-[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
+🧪 *[पर्याय १ / पर्याय २ ...]:*
+- घटक: [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - बाजारातील नावे: [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - वापर पद्धत: [मराठीत]
+- *डोस:* [formulation_dose_per_acre.value किंवा formulation_dose.value] [dosage मधून unit चे मराठी भाषांतर: kilo/gram/ml/Litre] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: (१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump.value] [formulation_dose_per_15L_pump.unit मराठीत])] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
+[water_dilution_per_acre.value किंवा water_dilution.value:] - पाणी: [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
+[dosage.waiting_period:] - *काढणीपूर्वी थांबण्याचा कालावधी:* [value मराठीत (उदा. ५५ दिवस)] (म्हणजे फवारणीनंतर इतके दिवस पीक काढू नका)
+[pests_covered[] रिकामे नसेल:] - लागू: [pests_covered — पूर्ण मराठीत भाषांतरित करून]
 [diy_homemade_options[] — bio_pesticide साठी:]
-  🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
+  - घरगुती पर्याय: [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा.
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
+  - "फवारणीपूर्वी बाटलीवरचं लेबल एकदा वाचा, आणि हातमोजे-मास्क घालूनच औषध हाताळा."
+  - "औषध वापरण्याआधी लेबल तपासा — आणि सुरक्षेसाठी हातमोजे व मास्क जरूर घाला."
+  - "बाटलीवरील सूचना नीट वाचा, आणि फवारताना डोळे व हातांचं संरक्षण विसरू नका."
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
