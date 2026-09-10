@@ -1,7 +1,7 @@
 """
 main.py
 ────────
-FastAPI application — the single entry point for the AgriIntel WhatsApp agent.
+FastAPI application — the single entry point for the AgriIntellect WhatsApp agent.
 
 Two webhook routes:
     GET  /webhook          → Meta verification handshake (one-time setup)
@@ -133,9 +133,9 @@ _PAYMENT_BUTTON = {
 }
 
 _PAYMENT_HEADER = {
-    "mr": "AgriIntel माहिती",
-    "hi": "AgriIntel जानकारी",
-    "en": "AgriIntel Advisory",
+    "mr": "AgriIntellect माहिती",
+    "hi": "AgriIntellect जानकारी",
+    "en": "AgriIntellect Advisory",
 }
 
 # ─── Unsupported message response ─────────────────────────────────────────────
@@ -144,6 +144,12 @@ _UNSUPPORTED_MSG = {
     "mr": "माफ करा, आम्ही फक्त मजकूर संदेश आणि स्थान स्वीकारतो.\nकृपया तुमचा प्रश्न मजकूरात पाठवा. 🌾",
     "hi": "माफ करें, हम सिर्फ text और location स्वीकार करते हैं.\nकृपया अपना सवाल text में भेजें। 🌾",
     "en": "Sorry, we only accept text messages and location.\nPlease send your question as text. 🌾",
+}
+# ─── Fertilizer processing wait notice ───────────────────────────────────────
+_FERTILIZER_WAIT_MSG = {
+    "mr": "🧪 तुमचा *पीक संरक्षण* सल्ला तयार होत आहे — यासाठी साधारण १-२ मिनिटे लागतील. जरा वाट पाहा. 🙏",
+    "hi": "🧪 आपकी *फसल सुरक्षा* सलाह तैयार हो रही है — इसमें लगभग १-२ मिनट लगेंगे। थोड़ा इंतज़ार करें। 🙏",
+    "en": "🧪 Preparing your *crop protection* advice — this takes about 1-2 minutes. Please wait. 🙏",
 }
 
 # ─── Awaiting payment message (farmer sends text while payment pending) ───────
@@ -172,18 +178,18 @@ _CANCEL_REPLY = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🌾 AgriIntel WhatsApp agent starting up")
+    logger.info("🌾 AgriIntellect WhatsApp agent starting up")
     yield
     # Shutdown — close DB connection pool cleanly
     consent_logger.close()
     wallet_db.close()
-    logger.info("🌾 AgriIntel WhatsApp agent shut down cleanly")
+    logger.info("🌾 AgriIntellect WhatsApp agent shut down cleanly")
 
 
 # ─── FastAPI app ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="AgriIntel WhatsApp Agent",
+    title="AgriIntellect WhatsApp Agent",
     description="Agricultural advisory backend — x402 + Razorpay payment gated",
     version="1.0.0",
     lifespan=lifespan,
@@ -482,7 +488,7 @@ async def _geocode_text_location(text: str) -> Optional[Tuple[float, float]]:
         }
         headers = {
             # Nominatim policy: must identify app + contact email or IP gets banned.
-            "User-Agent": "Farmyworth-AgriIntel/1.0 (contact@farmyworth.com)",
+            "User-Agent": "AgriIntellect/1.0 (ishankalhe1@gmail.com)",
         }
 
         async with httpx.AsyncClient(timeout=5.0) as http:
@@ -729,7 +735,7 @@ async def _handle_text_message(
                 ),
                 button_label="💳 UPI ने भरा",
                 url=link_result["short_url"],
-                header_text="Farmyworth क्रेडिट",
+                header_text="AgriIntellect क्रेडिट",
             )
         return
 
@@ -1080,6 +1086,15 @@ async def _deliver_with_credits(phone: str, session_id: str, lang: str) -> None:
         logger.info(f"[Main] 💳 Credit already deducted at routing for {phone[-4:]}")
 
     # ── Format and send ────────────────────────────────────────────────────
+    if service_type == "fertilizer":
+        await send_text(
+            phone,
+            _FERTILIZER_WAIT_MSG.get(
+                lang,
+                _FERTILIZER_WAIT_MSG["mr"]
+            )
+        )
+
     try:
         formatted = await format_response_for_whatsapp(
             service_type=service_type,
