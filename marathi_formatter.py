@@ -1,7 +1,7 @@
 """
 marathi_formatter.py
 ─────────────────────
-Formatting layer for AgriIntel WhatsApp backend.
+Formatting layer for AgriIntellect WhatsApp backend.
 
 MODEL: gemini-3.1-flash-lite (google-genai SDK)
 Kept on Gemini for throughput — lower time-to-first-token than GPT-4.1 mini
@@ -912,36 +912,48 @@ is_seed_treatment_query = true असल्यास:
 नियम ३ — Multiple recommendations: प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या. स्वतः "हा best आहे" म्हणू नका.
 नियम ४ — is_combination_product = true: "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
 नियम ५ — Bifurcation (वर्गीकरण): JSON मध्ये ज्या categories present आहेत, त्यांचे स्वतंत्र headers द्या (खालील साच्यात दिल्याप्रमाणे).
+नियम ६ — Symptom-Match ओळ (शेतकऱ्याला कीड/रोगाचे तांत्रिक नाव माहित नसते):
+  resolved_parameters.mapped_from_symptom = true असेल (म्हणजे शेतकऱ्याने कीड/रोगाचे नाव सांगितले नव्हते,
+  फक्त लक्षण सांगितले होते आणि आपण त्यावरून कीड/रोग ओळखले), तेव्हा प्रत्येक recommendation option च्या
+  "लागू" ओळीनंतर ही एक नवीन ओळ जोडा:
+    "- *लक्षण जुळते:* तुम्ही सांगितलेले '[शेतकऱ्याच्या मूळ संदेशातील लक्षण — वरील 'शेतकऱ्याचा संदेश' मधून, सोप्या मराठीत, तांत्रिक/इंग्रजी शब्दांशिवाय]' या लक्षणासाठी हे औषध आहे."
+  उदा: "- *लक्षण जुळते:* तुम्ही सांगितलेले 'पाने पिवळी पडत आहेत' या लक्षणासाठी हे औषध आहे."
+  ⚠️ शेतकऱ्याच्या मूळ शब्दांतच लक्षण परत सांगा — pest चे तांत्रिक/इंग्रजी नाव (उदा. "aphid", "जीवाणूजन्य करपा") इथे वापरू नका,
+     कारण शेतकऱ्याला तेच नाव माहित नाही म्हणून हे उत्तर दिले जात आहे.
+  mapped_from_symptom = false असेल (शेतकऱ्याने आधीच कीडीचे/रोगाचे नाव सांगितले होते) → ही ओळ पूर्णपणे skip करा —
+     अशा वेळी शेतकऱ्याला आधीच माहित आहे की कोणत्या समस्येसाठी औषध आहे, पुन्हा सांगायची गरज नाही.
 
 ━━━ OUTPUT FORMAT — SEED TREATMENT (is_seed_treatment_query = true असेल तेव्हा हाच वापरा) ━━━
 
 ✅ *[crop_display] बीजप्रक्रिया सल्ला* 🌱
 
-🌱 *पेरणीपूर्वी बियाण्यास लावण्यासाठी:*
+🌱 पेरणीपूर्वी बियाण्यास लावण्यासाठी:
 
 [प्रत्येक recommendations.seed_treatment[] entry साठी — 2+ असतील तर *पर्याय १*, *पर्याय २*:]
 🧪 *[पर्याय १ / पर्याय २ ...]:*
-- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
-[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
-[dosage.application_method:] - *वापर पद्धत:* [मराठीत — उदा. बियाण्यास चोळून लावा]
+- घटक: [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - बाजारातील नावे: [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - वापर पद्धत: [मराठीत — उदा. बियाण्यास चोळून लावा]
 - *डोस:* [formulation_dose.value] [formulation_dose.unit मराठीत] प्रति किलो बियाणासाठी
-[dosage.water_dilution.value:] - *पाणी:* [dosage.water_dilution.value] [dosage.water_dilution.unit मराठीत] मध्ये मिसळा
+[dosage.water_dilution.value:] - पाणी: [dosage.water_dilution.value] [dosage.water_dilution.unit मराठीत] मध्ये मिसळा
 
-⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
-हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
+  - "बीजप्रक्रिया केल्यावर बियाणे सावलीत सुकवा आणि लगेच पेरणी करा — हातमोजे घालूनच औषध हाताळा."
+  - "औषध लावल्यानंतर बियाणे सावलीतच सुकू द्या, उन्हात नको — आणि हात मोजे वापरायला विसरू नका."
+  - "बियाण्याला औषध लावताना हातमोजे घाला, आणि सुकल्यावर लगेच पेरणी करा."
 
 ━━━ OUTPUT FORMAT — NORMAL PEST/PGR (is_seed_treatment_query = false असेल तेव्हा हाच वापरा) ━━━
 
 [HEADER LOGIC नुसार:]
 ✅ *[crop_display] [योग्य title]* [emoji]
 
-🐛 *आढळलेली समस्या:* [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
+तुम्ही सांगितलेली/दिसणारी समस्या: [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
 
 [mapped_from_symptom = true असेल:]
-🔍 *(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)*
+🔍 (हे लक्षणांवरून ओळखलं आहे — प्रत्यक्ष पीक पाहून एकदा खात्री करून घ्या)
 
 [summary.has_bio_options = true असेल:]
-🌿 *IPM सल्ला:* जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय.
+🌿 *IPM सल्ला:* आधी जैविक उपाय वापरून पहा — रासायनिक उपाय शेवटचा पर्याय ठेवा.
 
 [overlap_best_matches[] रिकामे नसेल:]
 🎯 *सर्व समस्यांसाठी उपयुक्त (All-in-One):*
@@ -969,18 +981,22 @@ is_seed_treatment_query = true असल्यास:
 🌱 *वाढ नियंत्रक / टॉनिक (PGR):*
 [त्यातील पर्याय १, पर्याय २...]
 
-🧪 *[पर्याय १ / पर्याय २ ...] साचा:*
-- *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
-[has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
-[dosage.application_method:] - *वापर पद्धत:* [मराठीत]
-- *डोस:* [formulation_dose_per_acre.value किंवा formulation_dose.value] [dosage मधून unit चे मराठी भाषांतर: kilo/gram/ml/Litre] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump.value] [formulation_dose_per_15L_pump.unit मराठीत])*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
-[water_dilution_per_acre.value किंवा water_dilution.value:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
-[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
-[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
+🧪 *[पर्याय १ / पर्याय २ ...]:*
+- घटक: [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
+[has_brand_info true:] - बाजारातील नावे: [brands[] max ३][companies[] असतील: | [companies max २]]
+[dosage.application_method:] - वापर पद्धत: [मराठीत]
+- *डोस:* [formulation_dose_per_acre.value किंवा formulation_dose.value] [dosage मधून unit चे मराठी भाषांतर: kilo/gram/ml/Litre] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: (१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump.value] [formulation_dose_per_15L_pump.unit मराठीत])] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
+[water_dilution_per_acre.value किंवा water_dilution.value:] - पाणी: [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
+[dosage.waiting_period:] - *काढणीपूर्वी थांबण्याचा कालावधी:* [value मराठीत (उदा. ५५ दिवस)] (म्हणजे फवारणीनंतर इतके दिवस पीक काढू नका)
+[pests_covered[] रिकामे नसेल:] - लागू: [pests_covered — पूर्ण मराठीत भाषांतरित करून]
+[resolved_parameters.mapped_from_symptom = true असेल — नियम ६ नुसार:] - *लक्षण जुळते:* तुम्ही सांगितलेले '[शेतकऱ्याचे मूळ लक्षण — सोप्या मराठीत]' या लक्षणासाठी हे औषध आहे.
 [diy_homemade_options[] — bio_pesticide साठी:]
-  🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
+  - घरगुती पर्याय: [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा.
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
+  - "फवारणीपूर्वी बाटलीवरचं लेबल एकदा वाचा, आणि हातमोजे-मास्क घालूनच औषध हाताळा."
+  - "औषध वापरण्याआधी लेबल तपासा — आणि सुरक्षेसाठी हातमोजे व मास्क जरूर घाला."
+  - "बाटलीवरील सूचना नीट वाचा, आणि फवारताना डोळे व हातांचं संरक्षण विसरू नका."
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
@@ -996,6 +1012,7 @@ is_seed_treatment_query = true असल्यास:
 - JSON key नावे output मध्ये छापू नका. OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका.
 - is_seed_treatment_query = true असेल तर वरची SEED TREATMENT OUTPUT FORMAT template वापरा.
 - शेवटी कोणतेही "पुढची पायरी" / हवामान / मंडी सुचवण्याचे वाक्य स्वतःहून लिहू नका.
+- SYMPTOM-MATCH: "लक्षण जुळते" ओळीत शेतकऱ्याच्या "शेतकऱ्याचा संदेश" मध्ये स्पष्ट लक्षण नसेल (उदा. शेतकऱ्याने फक्त "औषध सांगा" किंवा "problem आहे" असे सामान्य वाक्य लिहिले असेल, नेमके लक्षण नाही) → ही ओळ पूर्णपणे skip करा, स्वतःहून लक्षण बनवू नका किंवा अंदाज लावू नका.
 """
 
     formatted = await _call_gemini(prompt)
