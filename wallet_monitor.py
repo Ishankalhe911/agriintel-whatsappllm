@@ -41,6 +41,15 @@ from whatsapp import send_text, send_payment_link
 
 logger = logging.getLogger(__name__)
 
+# ─── Fertilizer processing wait notice (LLM formatting takes ~1-2 min) ───────
+# NOTE: kept identical to main.py's _FERTILIZER_WAIT_MSG. Duplicated (not
+# imported) to avoid a circular import — main.py imports wallet_monitor.py,
+# not the other way around. If wording changes, update both places.
+_FERTILIZER_WAIT_MSG = {
+    "mr": "🧪 तुमचा *पीक संरक्षण* सल्ला तयार होत आहे — यासाठी साधारण १-२ मिनिटे लागतील. जरा वाट पाहा. 🙏",
+    "hi": "🧪 आपकी *फसल सुरक्षा* सलाह तैयार हो रही है — इसमें लगभग १-२ मिनट लगेंगे। थोड़ा इंतज़ार करें। 🙏",
+    "en": "🧪 Preparing your *crop protection* advice — this takes about 1-2 minutes. Please wait. 🙏",
+}
 
 # ─── Farmer-facing messages (three languages, Marathi default) ────────────────
 
@@ -133,9 +142,9 @@ _MESSAGES = {
 
     # ── Expiry resend header ───────────────────────────────────────────────
     "pay_header": {
-        "mr": "AgriIntel माहिती",
-        "hi": "AgriIntel जानकारी",
-        "en": "AgriIntel Advisory",
+        "mr": "AgriIntellect माहिती",
+        "hi": "AgriIntellect जानकारी",
+        "en": "AgriIntellect Advisory",
     },
         "topup_error": {
         "mr": "⚠️ *क्रेडिट जोडताना अडचण*\n\nतुमचे पेमेंट सुरक्षित आहे. 5 मिनिटांत पुन्हा प्रयत्न होईल. 🙏",
@@ -288,6 +297,24 @@ async def _handle_paid(
 
     # ── TOPUP SESSION — route to credits endpoint, no delivery ────────────
     session_type = session.get("session_type") or event.get("session_type", "query")
+
+    # ── Instant payment confirmation — BEFORE any downstream processing.
+    # Farmer must know the payment worked right away, even if credit-granting
+    # or data delivery takes several seconds (retries) to 1-2 minutes (fertilizer).
+    if session_type == "topup":
+        _payment_ack_msg = {
+            "mr": "✅ *पेमेंट यशस्वी झाले!*\n💳 तुमचे क्रेडिट जोडले जात आहेत, जरा थांबा...",
+            "hi": "✅ *पेमेंट सफल हुआ!*\n💳 आपके क्रेडिट जोड़े जा रहे हैं, कृपया थोड़ा इंतज़ार करें...",
+            "en": "✅ *Payment successful!*\n💳 Adding your credits, please wait...",
+        }
+    else:
+        _payment_ack_msg = {
+            "mr": "✅ *पेमेंट यशस्वी झाले!*\n🌾 तुमची माहिती तयार होत आहे...",
+            "hi": "✅ *पेमेंट सफल हुआ!*\n🌾 आपकी जानकारी तैयार हो रही है...",
+            "en": "✅ *Payment successful!*\n🌾 Preparing your information...",
+        }
+    await send_text(phone, _payment_ack_msg.get(lang, _payment_ack_msg["mr"]))
+
     if session_type == "topup":
         await _handle_topup_paid(
             session=session,
@@ -362,6 +389,9 @@ async def _handle_paid(
         return
 
     logger.info(f"[WalletMonitor] ✅ Query delivered for session {session_id}")
+
+    if service_type == "fertilizer":
+        await send_text(phone, _FERTILIZER_WAIT_MSG.get(lang, _FERTILIZER_WAIT_MSG["mr"]))
 
     # ── Format and send to farmer ──────────────────────────────────────────
     try:
@@ -788,6 +818,8 @@ async def _retry_delivery_after_delay(
 
     logger.info(f"[WalletMonitor] ✅ Retry query delivered for session {session_id}")
 
+    if service_type == "fertilizer":
+        await send_text(phone, _FERTILIZER_WAIT_MSG.get(lang, _FERTILIZER_WAIT_MSG["mr"]))
 
     try:
         formatted = await format_response_for_whatsapp(
