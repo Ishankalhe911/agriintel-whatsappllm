@@ -804,9 +804,6 @@ def _cross_service_suggestions(data: dict[str, Any]) -> str:
 
     return "\n\n" + "\n".join(lines)
 # ─── FERTILIZER formatter ─────────────────────────────────────────────────────
-# ─── FERTILIZER formatter ─────────────────────────────────────────────────────
-
-# ─── FERTILIZER formatter ─────────────────────────────────────────────────────
 
 async def format_fertilizer_response(
     data: dict[str, Any],
@@ -851,8 +848,8 @@ pests_covered[]          → हे औषध नक्की कोणत्य
 dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
 dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
 dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
-dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
-                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा
+dosage.waiting_period    → PHI (Pre-Harvest Interval) — ⚠️ फवारणीनंतर किती दिवस पीक काढायचे नाही याचा कडक नियम.
+                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा.
 dosage.application_method → फवारणी/मातीत/बियाण्यावर — कशा प्रकारे वापरायचे
 brands[]                 → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
 companies[]              → या ब्रँड्स बनवणाऱ्या कंपन्या
@@ -993,11 +990,11 @@ is_seed_treatment_query = true असल्यास:
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत]
 - *डोस:* [formulation_dose_per_acre.value किंवा formulation_dose.value] [dosage मधून unit चे मराठी भाषांतर: kilo/gram/ml/Litre] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump.value] [formulation_dose_per_15L_pump.unit मराठीत])*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
 [water_dilution_per_acre.value किंवा water_dilution.value:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
-[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
+[dosage.waiting_period:] - 🚫 *फवारणीनंतर सुरक्षित अंतर (PHI):* फवारणी केल्यावर पुढील [value मराठीत (उदा. ५५ दिवस)] पीक काढू नका.
 [diy_homemade_options[] — bio_pesticide साठी:]
   🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच float प्रत्येक वेळी वापरू नका:]
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
   - "फवारणीपूर्वी बाटलीवरचं लेबल एकदा वाचा, आणि हातमोजे-मास्क घालूनच औषध हाताळा."
   - "औषध वापरण्याआधी लेबल तपासा — आणि सुरक्षेसाठी हातमोजे व मास्क जरूर घाला."
   - "बाटलीवरील सूचना नीट वाचा, आणि फवारताना डोळे व हातांचं संरक्षण विसरू नका."
