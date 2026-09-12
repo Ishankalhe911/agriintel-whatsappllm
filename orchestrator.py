@@ -261,6 +261,7 @@ Rules:
 4. time_horizon: "now" unless farmer says pudhe/future/N days → "30_days" format
 5. language: "mr" for Marathi/Marathi-in-English-script, "hi" for Hindi, "en" for English
 6. pest: extract pest/disease names as a list. मावा→["aphid"], stem borer→["stem_borer"], करपा→["blight"], भुरी→["powdery_mildew"]. Multiple pests → list all.
+   - ⚠️ CRITICAL: Generic words like "kide" (किडे), "ali" (अळी), "kid" (कीड), "bugs", or "insects" are NOT specific pests. If the farmer only says generic insect words without naming the exact bug, set pest=null.
 7. symptom: 
    - ⚠️ CRITICAL: Must be a specific PHYSICAL/VISUAL symptom (e.g. "leaves turning yellow", "holes in leaves", "white spots"). 
    - Generic complaint words like "kharab zhala", "खराब झाले", "rog aala", "रोग आला", "nuksan", "problem aahe" are NOT symptoms. Set symptom=null for generic complaints.
