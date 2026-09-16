@@ -173,6 +173,88 @@ _CANCEL_REPLY = {
     "en": "✅ Cancelled. Send your new question. 🌾",
 }
 
+# ─── Greeting / "hi" triggers — send service description, no LLM call ────────
+# ⚠️ EXACT match only (not substring) — a substring check like the other
+# trigger sets use would false-positive on farmer words that merely contain
+# "hi" (e.g. "hindi", "chilli", "history"). Compare against the stripped,
+# lowercased full message.
+_GREETING_TRIGGERS = {
+    "hi", "hello", "hey", "start", "menu",
+    "नमस्कार", "नमस्ते", "namaskar", "namaste",
+}
+
+_GREETING_MSG = {
+    "mr": (
+        "🌾 नमस्कार! मी तुमचा *AgriIntellect* शेती सहाय्यक आहे.\n\n"
+        "आम्ही ३ सेवा देतो 👇\n\n"
+        "1️⃣ *मंडी भाव* (₹6/प्रश्न)\n"
+        "   कुठे विकायचे, कोणत्या मंडीत जास्त भाव, वाहतूक खर्च, निव्वळ नफा.\n"
+        "   उदा: \"सोयाबीनचे भाव काय आहेत?\"\n\n"
+        "2️⃣ *हवामान* (₹2.5/प्रश्न)\n"
+        "   पाऊस कधी, फवारणीसाठी सुरक्षित वेळ, सिंचनाचा सल्ला.\n"
+        "   उदा: \"उद्या फवारणी करू का?\"\n\n"
+        "3️⃣ *पीक संरक्षण* (₹5/प्रश्न) — यात हे सर्व येते:\n"
+        "   🐛 *कीड/रोगावर औषध* — उदा: \"सोयाबीनला अळी लागली आहे, औषध सांगा\"\n"
+        "   🌿 *तणनाशक* — उदा: \"कापसात तण झाले आहे, तणनाशक सांगा\"\n"
+        "   🌱 *बीजप्रक्रिया (पेरणीपूर्वी)* — उदा: \"मी तूर पेरत आहे, बीजप्रक्रिया सांगा\"\n"
+        "   🍃 *जैविक/सेंद्रिय पर्याय* — उपलब्ध असल्यास रासायनिक औषधासोबत जैविक पर्यायही आपोआप दाखवतो\n\n"
+        "📝 *कसं काम करतं:*\n"
+        "शेतीचा प्रश्न मराठी/हिंदी/इंग्रजीत टाइप करा → छोटी रक्कम भरा → १-२ मिनिटांत उत्तर मिळेल.\n\n"
+        "⚠️ *महत्त्वाचे:*\n"
+        "- सर्व डोस *प्रति एकर* दिले जातात\n"
+        "- फक्त *सरकार-मान्यताप्राप्त (CIBRC)* औषधांची शिफारस करतो\n"
+        "- औषध वापरण्यापूर्वी शंका असल्यास तुमच्या जवळच्या *कृषी सेवा केंद्र/खत दुकानदाराला* एकदा विचारून घ्या\n\n"
+        "💳 *वारंवार वापरता?* 'topup' पाठवा — ₹20 मध्ये 5 प्रश्न किंवा ₹30 मध्ये 10 प्रश्न.\n\n"
+        "आजच तुमचा पहिला प्रश्न विचारा! 🙏"
+    ),
+    "hi": (
+        "🌾 नमस्ते! मैं आपका *AgriIntellect* कृषी सहायक हूं।\n\n"
+        "हम ३ सेवाएं देते हैं 👇\n\n"
+        "1️⃣ *मंडी भाव* (₹6/सवाल)\n"
+        "   कहां बेचें, किस मंडी में ज़्यादा भाव, ट्रांसपोर्ट खर्च, शुद्ध मुनाफा।\n"
+        "   उदा: \"सोयाबीन का भाव क्या है?\"\n\n"
+        "2️⃣ *मौसम* (₹2.5/सवाल)\n"
+        "   बारिश कब, छिड़काव के लिए सुरक्षित समय, सिंचाई की सलाह।\n"
+        "   उदा: \"कल छिड़काव करूं क्या?\"\n\n"
+        "3️⃣ *फसल सुरक्षा* (₹5/सवाल) — इसमें यह सब शामिल है:\n"
+        "   🐛 *कीट/रोग की दवाई* — उदा: \"सोयाबीन में इल्ली लगी है, दवाई बताओ\"\n"
+        "   🌿 *खरपतवारनाशक* — उदा: \"कपास में खरपतवार है, दवाई बताओ\"\n"
+        "   🌱 *बीज उपचार (बुवाई से पहले)* — उदा: \"मैं तुअर बो रहा हूं, बीज उपचार बताओ\"\n"
+        "   🍃 *जैविक/ऑर्गेनिक विकल्प* — उपलब्ध होने पर रासायनिक दवाई के साथ जैविक विकल्प भी अपने आप दिखाता है\n\n"
+        "📝 *कैसे काम करता है:*\n"
+        "अपना सवाल मराठी/हिंदी/इंग्लिश में टाइप करें → थोड़ा पैसा भरें → १-२ मिनट में जवाब मिलेगा।\n\n"
+        "⚠️ *ज़रूरी बात:*\n"
+        "- सभी डोज़ *प्रति एकड़* दी जाती है\n"
+        "- सिर्फ़ *सरकार-मान्यता प्राप्त (CIBRC)* दवाइयों की सलाह देते हैं\n"
+        "- दवाई इस्तेमाल करने से पहले शंका हो तो अपने नज़दीकी *कृषि सेवा केंद्र/खाद दुकानदार* से एक बार पूछ लें\n\n"
+        "💳 *बार-बार इस्तेमाल करते हैं?* 'topup' भेजें — ₹20 में 5 सवाल या ₹30 में 10 सवाल।\n\n"
+        "आज ही अपना पहला सवाल पूछें! 🙏"
+    ),
+    "en": (
+        "🌾 Hello! I'm your *AgriIntellect* farming assistant.\n\n"
+        "We offer 3 services 👇\n\n"
+        "1️⃣ *Mandi Prices* (₹6/query)\n"
+        "   Where to sell, which mandi pays more, transport cost, net profit.\n"
+        "   e.g. \"What's the soybean price?\"\n\n"
+        "2️⃣ *Weather* (₹2.5/query)\n"
+        "   Rain forecast, safe spray timing, irrigation advice.\n"
+        "   e.g. \"Should I spray tomorrow?\"\n\n"
+        "3️⃣ *Crop Protection* (₹5/query) — includes all of this:\n"
+        "   🐛 *Pest/disease treatment* — e.g. \"My soybean has caterpillars, suggest medicine\"\n"
+        "   🌿 *Herbicide* — e.g. \"Weeds in my cotton field, suggest herbicide\"\n"
+        "   🌱 *Seed treatment (pre-sowing)* — e.g. \"I'm sowing tur, suggest seed treatment\"\n"
+        "   🍃 *Bio/organic options* — shown automatically alongside chemical options when available\n\n"
+        "📝 *How it works:*\n"
+        "Type your farming question in Marathi/Hindi/English → pay a small amount → get your answer in 1-2 minutes.\n\n"
+        "⚠️ *Important:*\n"
+        "- All doses are given *per acre*\n"
+        "- We only recommend *government-approved (CIBRC)* chemicals\n"
+        "- If you have any doubt about the recommendation, please confirm once with your local *agri service center/fertilizer shopkeeper*\n\n"
+        "💳 *Frequent user?* Reply 'topup' — ₹20 for 5 queries or ₹30 for 10 queries.\n\n"
+        "Ask your first question today! 🙏"
+    ),
+}
+
 
 # ─── Lifespan (startup / shutdown) ───────────────────────────────────────────
 
@@ -303,6 +385,16 @@ async def _process_whatsapp_message(msg: dict, phone: str, msg_type: str) -> Non
                 store.clear_session(session.get("session_id", ""))
             await send_text(phone, _CANCEL_REPLY.get(lang, _CANCEL_REPLY["mr"]))
 
+            return
+
+        # Greeting ("hi"/"नमस्कार" etc.) — send service description directly,
+        # skip the LLM pipeline entirely (saves cost + time on a non-query message).
+        # EXACT match only — see _GREETING_TRIGGERS comment for why.
+        # Skip this if farmer is mid-flow (awaiting a specific reply) so we
+        # never hijack an active conversation.
+        awaiting_state = session.get("awaiting") if session else None
+        if text_lower in _GREETING_TRIGGERS and not awaiting_state:
+            await send_text(phone, _GREETING_MSG.get(lang, _GREETING_MSG["mr"]))
             return
 
     # ── Route by message type ─────────────────────────────────────────────
