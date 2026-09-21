@@ -104,6 +104,7 @@ def _error_response(reason: str) -> str:
     )
 
 
+
 async def _call_gemini(user_prompt: str) -> str:
     # 1. Catch missing API keys immediately
     try:
@@ -868,8 +869,8 @@ pests_covered[]          → हे औषध नक्की कोणत्य
 dosage.ai_dose           → active ingredient प्रमाणे डोस (असल्यास)
 dosage.formulation_dose  → प्रत्यक्ष बाटली/पाकिटावरील फॉर्म्युलेशन डोस — शेतकऱ्यासाठी हाच सर्वात उपयोगी
 dosage.water_dilution    → किती लिटर पाण्यात मिसळायचे
-dosage.waiting_period    → PHI — काढणीपूर्वी किती दिवस थांबायचे — नेहमी सांगा, असल्यास
-                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा
+dosage.waiting_period    → PHI (Pre-Harvest Interval) — ⚠️ फवारणीनंतर किती दिवस पीक काढायचे नाही याचा कडक नियम.
+                            seed_treatment साठी हे सहसा "Not applicable (seed treatment)" येते — तसेच सांगा.
 dosage.application_method → फवारणी/मातीत/बियाण्यावर — कशा प्रकारे वापरायचे
 brands[]                 → बाजारात मिळणाऱ्या औषधांची नावे — यादीतीलच नावे सांगा
 companies[]              → या ब्रँड्स बनवणाऱ्या कंपन्या
@@ -900,7 +901,7 @@ is_pgr_query = true                     → ✅ *[crop_display] ग्रोथ 
 mapped_from_symptom = true              → ✅ *[crop_display] लक्षणावरून ओळखलेली समस्या* 🔍
 recommendations मध्ये फक्त fungicide[]  → ✅ *[crop_display] रोग व्यवस्थापन सल्ला* 🍃
 recommendations मध्ये फक्त herbicide[] → ✅ *[crop_display] तण व्यवस्थापन सल्ला* 🌿
-इतर सर्व (कीड/मिश्र)                   → ✅ *[crop_display] पीक संरक्षण सल्ला* 🧪
+इतर सर्व (कीड/मिश्र)                    → ✅ *[crop_display] पीक संरक्षण सल्ला* 🧪
 
 ━━━ HOW TO ANSWER ━━━
 ━━━ DIRECT ANSWER — CROP PROTECTION ━━━
@@ -927,11 +928,21 @@ is_seed_treatment_query = true असल्यास:
   हे पेरणीच्या वेळचे बीजप्रक्रिया उत्तर आहे — शेतात सध्या कोणतीही कीड/रोग नाही.
   🎯 सर्व समस्यांसाठी उपयुक्त / IPM जैविक-आधी सल्ला / pests_covered — यातले काहीही दाखवू नका.
   थेट खाली दिलेला विशेष header + recommendations.seed_treatment[] दाखवा.
-नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल: हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त:" असे header देऊन.
-नियम २ — IPM hierarchy: summary.has_bio_options = true असेल तर "🌿 जैविक उपाय आधी वापरून पहा" असा सल्ला द्या.
+नियम १ — overlap_best_matches[] असेल आणि रिकामे नसेल: हे सर्वात आधी दाखवा — "🎯 सर्व समस्यांसाठी उपयुक्त (All-in-One):" असे header देऊन.
+नियम २ — IPM hierarchy: summary.has_bio_options = true असेल तर "🌿 *IPM सल्ला:* आधी जैविक उपाय वापरून पहा — रासायनिक उपाय शेवटचा पर्याय ठेवा." असा सल्ला द्या.
 नियम ३ — Multiple recommendations: प्रत्येकासाठी स्वतंत्र *पर्याय १*, *पर्याय २* block द्या. स्वतः "हा best आहे" म्हणू नका.
 नियम ४ — is_combination_product = true: "(हे दोन घटकांचे संयुक्त औषध आहे)" असे नमूद करा.
 नियम ५ — Bifurcation (वर्गीकरण): JSON मध्ये ज्या categories present आहेत, त्यांचे स्वतंत्र headers द्या (खालील साच्यात दिल्याप्रमाणे).
+नियम ६ — 🚀 SMART DIAGNOSIS (Symptom-to-Pest Mapping):
+  resolved_parameters.mapped_from_symptom = true असेल (म्हणजे शेतकऱ्याने कीड/रोगाचे नाव सांगितले नव्हते, फक्त लक्षण सांगितले होते), तेव्हा अंधेपणाने फक्त औषधे देऊ नका.
+  शेतकऱ्याचा विश्वास वाढवण्यासाठी एक Expert Diagnostician सारखे स्पष्टीकरण (Diagnosis) द्या.
+  शेतकऱ्याच्या लक्षणाचा संबंध JSON मधील `targets_resolved` शी जोडून सांगा की ही औषधे नेमकी का निवडली आहेत.
+  उदा: "तुम्ही सांगितलेल्या 'पाने कुरतडलेली दिसतात' या लक्षणावरून पिकावर **पाने खाणाऱ्या अळीचा (Caterpillar)** प्रादुर्भाव असू शकतो. खालील औषधे अळीच्या पचनसंस्थेवर (Stomach poison) काम करून तिला मारतात."
+  हे सर्व पर्यायांच्या आधी '🔍 *निदान (Diagnosis):*' या block मध्ये एकदाच द्या.
+नियम ७ — 🚀 DIFFERENTIAL DIAGNOSIS (Triage - पर्यायांची निवड):
+  जर mapped_from_symptom = true असेल आणि एकापेक्षा जास्त पर्याय वेगवेगळ्या लक्षणांसाठी/किडींसाठी असतील (उदा. एक पाने खाणारी अळी आणि दुसरी खोडकिडा), तर प्रत्येक पर्यायाच्या खाली '💡 *कधी वापरावे:*' अशी एक ओळ जोडा.
+  यात शेतकऱ्याला स्पष्ट सांगा की त्याने शेतात नेमके कोणते लक्षण दिसल्यास हा पर्याय निवडावा.
+  उदा: "💡 *कधी वापरावे:* जर अळी पानांना छिद्रे पाडत असेल तर हे औषध निवडा." किंवा "💡 *कधी वापरावे:* जर अळी खोडात शिरली असेल तर हे औषध निवडा."
 
 ━━━ OUTPUT FORMAT — SEED TREATMENT (is_seed_treatment_query = true असेल तेव्हा हाच वापरा) ━━━
 
@@ -947,8 +958,10 @@ is_seed_treatment_query = true असल्यास:
 - *डोस:* [formulation_dose.value] [formulation_dose.unit मराठीत] प्रति किलो बियाणासाठी
 [dosage.water_dilution.value:] - *पाणी:* [dosage.water_dilution.value] [dosage.water_dilution.unit मराठीत] मध्ये मिसळा
 
-⚠️ *महत्त्वाची टीप:* बीजप्रक्रिया केल्यानंतर बियाणे सावलीत सुकवा, लगेच पेरणी करा.
-हातमोजे वापरा — औषध हाताला थेट लागू देऊ नका.
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
+  - "बीजप्रक्रिया केल्यावर बियाणे सावलीत सुकवा आणि लगेच पेरणी करा — हातमोजे घालूनच औषध हाताळा."
+  - "औषध लावल्यानंतर बियाणे सावलीतच सुकू द्या, उन्हात नको — आणि हात मोजे वापरायला विसरू नका."
+  - "बियाण्याला औषध लावताना हातमोजे घाला, आणि सुकल्यावर लगेच पेरणी करा."
 
 ━━━ OUTPUT FORMAT — NORMAL PEST/PGR (is_seed_treatment_query = false असेल तेव्हा हाच वापरा) ━━━
 
@@ -958,10 +971,11 @@ is_seed_treatment_query = true असल्यास:
 🐛 *आढळलेली समस्या:* [targets_resolved — पूर्ण मराठीत, स्वल्पविरामाने]
 
 [mapped_from_symptom = true असेल:]
-🔍 *(लक्षणांवरून ओळखले — प्रत्यक्ष पाहून खात्री करा)*
+🔍 *निदान (Diagnosis):* [नियम ६ नुसार शेतकऱ्याचे लक्षण आणि संभाव्य कीड/रोग यांचा संबंध सांगणारे स्पष्टीकरण. औषध का काम करेल हे सांगा.]
+*(प्रत्यक्ष पीक पाहून खात्री करा)*
 
 [summary.has_bio_options = true असेल:]
-🌿 *IPM सल्ला:* जैविक उपाय आधी वापरून पहा — रासायनिक उपाय शेवटचा पर्याय.
+🌿 *IPM सल्ला:* आधी जैविक उपाय वापरून पहा — रासायनिक उपाय शेवटचा पर्याय ठेवा.
 
 [overlap_best_matches[] रिकामे नसेल:]
 🎯 *सर्व समस्यांसाठी उपयुक्त (All-in-One):*
@@ -992,15 +1006,19 @@ is_seed_treatment_query = true असल्यास:
 🧪 *[पर्याय १ / पर्याय २ ...] साचा:*
 - *घटक:* [chemical_name][is_combination_product true: " (संयुक्त औषध)"]
 [has_brand_info true:] - *बाजारातील नावे:* [brands[] max ३][companies[] असतील: | [companies max २]]
+[pests_covered[] रिकामे नसेल:] - *नियंत्रण:* [pests_covered — पूर्ण मराठीत भाषांतरित करून (उदा. 'पाने खाणारी अळी / रस शोषक कीड')]
+[mapped_from_symptom = true असल्यास — नियम ७ नुसार:] 💡 *कधी वापरावे:* [या विशिष्ट औषधाचा वापर नेमक्या कोणत्या लक्षणासाठी (उदा. पाने खाणे vs खोड पोखरणे) करावा हे १ ओळीत सांगा.]
 [dosage.application_method:] - *वापर पद्धत:* [मराठीत]
 - *डोस:* [formulation_dose_per_acre.value किंवा formulation_dose.value] [dosage मधून unit चे मराठी भाषांतर: kilo/gram/ml/Litre] [प्रति एकर / प्रति हेक्टर] [formulation_dose_per_15L_pump असेल: *(१५ लिटर पंपासाठी: [formulation_dose_per_15L_pump.value] [formulation_dose_per_15L_pump.unit मराठीत])*] [ai_dose असेल: (सक्रिय घटक: [ai_dose])]
 [water_dilution_per_acre.value किंवा water_dilution.value:] - *पाणी:* [value] लिटर पाणी [प्रति एकर / प्रति हेक्टर]
-[dosage.waiting_period:] - *काढणीपूर्वी थांबा (PHI):* [value मराठीत (उदा. ५५ दिवस)]
-[pests_covered[] रिकामे नसेल:] - *लागू:* [pests_covered — पूर्ण मराठीत भाषांतरित करून]
+[dosage.waiting_period:] - 🚫 *फवारणीनंतर सुरक्षित अंतर (PHI):* फवारणी केल्यावर पुढील [value मराठीत (उदा. ५५ दिवस)] पीक काढू नका.
 [diy_homemade_options[] — bio_pesticide साठी:]
   🏡 *घरगुती पर्याय:* [name] — [ingredients] | कृती: [method]
 
-⚠️ *महत्त्वाची टीप:* फवारणीपूर्वी औषधाच्या बाटलीवरील लेबल आणि PPE (हातमोजे, मास्क, डोळ्यांचे रक्षण) नक्की तपासा.
+⚠️ *महत्त्वाची टीप:* [खालीलपैकी संदर्भाला साजेशी एकच ओळ निवडा — शब्दशः तीच ओळ प्रत्येक वेळी वापरू नका:]
+  - "फवारणीपूर्वी बाटलीवरचं लेबल एकदा वाचा, आणि हातमोजे-मास्क घालूनच औषध हाताळा."
+  - "औषध वापरण्याआधी लेबल तपासा — आणि सुरक्षेसाठी हातमोजे व मास्क जरूर घाला."
+  - "बाटलीवरील सूचना नीट वाचा, आणि फवारताना डोळे व हातांचं संरक्षण विसरू नका."
 
 ━━━ JSON DATA ━━━
 {json.dumps(data, ensure_ascii=False, indent=2)}
@@ -1016,6 +1034,7 @@ is_seed_treatment_query = true असल्यास:
 - JSON key नावे output मध्ये छापू नका. OUTPUT FORMAT मधील [ ] brackets output मध्ये छापू नका.
 - is_seed_treatment_query = true असेल तर वरची SEED TREATMENT OUTPUT FORMAT template वापरा.
 - शेवटी कोणतेही "पुढची पायरी" / हवामान / मंडी सुचवण्याचे वाक्य स्वतःहून लिहू नका.
+- SYMPTOM-MATCH: शेतकऱ्याच्या "शेतकऱ्याचा संदेश" मध्ये स्पष्ट लक्षण नसेल (उदा. शेतकऱ्याने फक्त "औषध सांगा" किंवा "problem आहे" असे सामान्य वाक्य लिहिले असेल, नेमके लक्षण नाही) → "🔍 *निदान (Diagnosis):*" आणि "💡 *कधी वापरावे:*" हे दोन्ही blocks पूर्णपणे skip करा, स्वतःहून लक्षण बनवू नका किंवा अंदाज लावू नका.
 """
 
     formatted = await _call_gemini(prompt)
@@ -1027,7 +1046,6 @@ is_seed_treatment_query = true असल्यास:
     suggestion = _cross_service_suggestions(data)
 
     return formatted + suggestion
-
 # ─── Main entry point ─────────────────────────────────────────────────────────
 
 async def format_response_for_whatsapp(
