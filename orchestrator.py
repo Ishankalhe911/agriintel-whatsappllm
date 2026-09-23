@@ -545,50 +545,90 @@ Call the correct tool. Key rules:
 - sowing intent (about to sow/plant) → CROP PROTECTION (seed treatment)
 - price/sell/profit/mandi → MANDI"""
 
+    function_call = None
+
     try:
+        # ATTEMPT 1: Primary
         response = await client.aio.models.generate_content(
-            model=MODEL_ROUTING,
+            model="gemini-3.1-flash-lite",
             contents=context,
             config=types.GenerateContentConfig(
                 tools=TOOLS,
                 tool_config=types.ToolConfig(
-                    function_calling_config=types.FunctionCallingConfig(
-                        mode="ANY",
-                    )
+                    function_calling_config=types.FunctionCallingConfig(mode="ANY")
                 ),
                 temperature=0.0,
             ),
         )
-
-        function_call = None
         for part in response.candidates[0].content.parts:
             if part.function_call:
                 function_call = part.function_call
                 break
 
-        if not function_call:
-            logger.error("[Orchestrator] No function call returned despite mode=ANY")
-            return {"service_type": None, "params": {}, "confidence": "low"}
+    except Exception as e1:
+        logger.warning(f"[Orchestrator] Routing 3.1-flash-lite failed: {e1}. Trying 3.5...")
+        try:
+            # ATTEMPT 2: First fallback
+            response = await _get_client().aio.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=context,
+                config=types.GenerateContentConfig(
+                    tools=TOOLS,
+                    tool_config=types.ToolConfig(
+                        function_calling_config=types.FunctionCallingConfig(mode="ANY")
+                    ),
+                    temperature=0.0,
+                ),
+            )
+            for part in response.candidates[0].content.parts:
+                if part.function_call:
+                    function_call = part.function_call
+                    break
+            logger.info("[Orchestrator] ✅ Routing fallback to 3.5-flash-lite succeeded.")
 
-        fn_name = function_call.name
-        fn_args = dict(function_call.args)
+        except Exception as e2:
+            logger.warning(f"[Orchestrator] Routing 3.5-flash-lite failed: {e2}. Trying 3.8...")
+            try:
+                # ATTEMPT 3: Final fallback
+                response = await _get_client().aio.models.generate_content(
+                    model="gemini-3.8-flash",
+                    contents=context,
+                    config=types.GenerateContentConfig(
+                        tools=TOOLS,
+                        tool_config=types.ToolConfig(
+                            function_calling_config=types.FunctionCallingConfig(mode="ANY")
+                        ),
+                        temperature=0.0,
+                    ),
+                )
+                for part in response.candidates[0].content.parts:
+                    if part.function_call:
+                        function_call = part.function_call
+                        break
+                logger.info("[Orchestrator] ✅ Routing fallback to 3.8-flash succeeded.")
 
-        # Fix 6: explicit mapping — no silent else clause
-        if fn_name == "get_mandi_prices":
-            service_type = "mandi"
-        elif fn_name == "get_crop_protection":
-            service_type = "fertilizer"
-        elif fn_name == "get_weather_risk":
-            service_type = "weather"
-        else:
-            logger.error(f"[Orchestrator] Unknown function name from Gemini: {fn_name}")
-            service_type = None
+            except Exception as e3:
+                logger.error(f"[Orchestrator] ❌ All routing models failed. Last error: {e3}")
+                return {"service_type": None, "params": {}, "confidence": "low"}
 
-        return {"service_type": service_type, "params": fn_args, "confidence": "high"}
-
-    except Exception as e:
-        logger.error(f"[Orchestrator] Routing failed: {e}")
+    if not function_call:
+        logger.error("[Orchestrator] No function call returned despite mode=ANY")
         return {"service_type": None, "params": {}, "confidence": "low"}
+
+    fn_name = function_call.name
+    fn_args = dict(function_call.args)
+
+    if fn_name == "get_mandi_prices":
+        service_type = "mandi"
+    elif fn_name == "get_crop_protection":
+        service_type = "fertilizer"
+    elif fn_name == "get_weather_risk":
+        service_type = "weather"
+    else:
+        logger.error(f"[Orchestrator] Unknown function name from Gemini: {fn_name}")
+        service_type = None
+
+    return {"service_type": service_type, "params": fn_args, "confidence": "high"}
 
 
 # ─── Clarification & Response Messages ────────────────────────────────────────
