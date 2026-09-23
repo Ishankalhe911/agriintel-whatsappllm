@@ -795,8 +795,8 @@ async def orchestrate(
     try:
         _credit_reader = CreditReader()
         balance = _credit_reader.get_balance(phone)
-        if balance == 0:
-            logger.info(f"[Orchestrator] Balance 0 on first read — retrying in 5s (Neon lag guard)")
+        if balance == 0 and prior.get("session_type") == "topup":
+            logger.info(f"[Orchestrator] Balance 0 post-topup — retrying in 5s (Neon lag guard)")
             await asyncio.sleep(5)
             balance = _credit_reader.get_balance(phone)
             if balance == 0:
