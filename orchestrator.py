@@ -72,9 +72,9 @@ def _get_client() -> genai.Client:
 
 # ─── Models ───────────────────────────────────────────────────────────────────
 
-MODEL_PREFLIGHT  = "gemini-3.1-flash-lite"
-MODEL_EXTRACTION = "gemini-3.1-flash-lite"
-MODEL_ROUTING    = "gemini-3.1-flash-lite"
+MODEL_PREFLIGHT  = "gemini-3.5-flash-lite"
+MODEL_EXTRACTION = "gemini-3.5-flash-lite"
+MODEL_ROUTING    = "gemini-3.5-flash-lite"
 
 # ─── Supported Crops ──────────────────────────────────────────────────────────
 
