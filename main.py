@@ -179,7 +179,7 @@ _CANCEL_REPLY = {
 # "hi" (e.g. "hindi", "chilli", "history"). Compare against the stripped,
 # lowercased full message.
 _GREETING_TRIGGERS = {
-    "hi", "hello", "hey", "start", "menu",
+    "hi", "hii", "hello", "hey", "start", "menu",
     "नमस्कार", "नमस्ते", "namaskar", "namaste",
 }
 
